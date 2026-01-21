@@ -1,0 +1,182 @@
+import httpx
+import structlog
+from pathlib import Path
+from typing import TYPE_CHECKING, Optional
+from curator.plugins.base import IngestionPlugin, ContentMetadata
+from curator.plugins.youtube import YouTubePlugin
+from curator.plugins.youtube_utils import is_youtube_url
+from curator.chunking import chunk_by_semantic, chunk_with_timestamps
+
+if TYPE_CHECKING:
+    from curator.storage import CuratorStorage
+    from curator.config import CuratorSettings
+
+logger = structlog.get_logger()
+
+class IngestionOrchestrator:
+    """Synchronous orchestrator for content ingestion."""
+
+    def __init__(self, storage: 'CuratorStorage', settings: 'CuratorSettings'):
+        self.storage = storage
+        self.settings = settings
+        self._engram_url = settings.engram_api_url
+        self._transcribe_url = settings.transcribe_service_url
+        # Long timeout for transcription (1 hour default)
+        self._transcribe_timeout = httpx.Timeout(
+            connect=30.0,
+            read=3600.0,
+            write=60.0,
+            pool=30.0
+        )
+
+    async def ingest_url(
+        self,
+        url: str,
+        subscription_id: Optional[int] = None,
+        job_id: Optional[str] = None
+    ) -> bool:
+        """Ingest content from URL (auto-detects plugin).
+
+        Args:
+            url: URL to ingest
+            subscription_id: Optional subscription ID to associate with
+            job_id: Optional job ID for status tracking
+
+        Returns:
+            True on success, False on failure
+        """
+        try:
+            # Update job status to processing if job_id provided
+            if job_id:
+                self.storage.update_fetch_job(job_id, status="processing")
+
+            # Detect content type and create plugin
+            plugin = self._get_plugin_for_url(url)
+            if not plugin:
+                raise ValueError(f"Unsupported URL type: {url}")
+
+            logger.info("Starting ingestion", url=url, plugin=plugin.source_type)
+
+            # Call the main ingest method (returns metadata and content_id)
+            metadata, content_id = await self.ingest(url, plugin)
+
+            # Update job status to completed if job_id provided
+            if job_id:
+                self.storage.update_fetch_job(
+                    job_id,
+                    status="completed",
+                    content_id=content_id
+                )
+
+            # Create ingested_item record with full metadata
+            if subscription_id:
+                self.storage.create_ingested_item(
+                    source_type=plugin.source_type,
+                    source_id=content_id,
+                    source_url=url,
+                    title=metadata.title,
+                    author=metadata.author,
+                    published_at=metadata.published_at,
+                    subscription_id=subscription_id,
+                    metadata={"duration_seconds": metadata.duration_seconds}
+                )
+
+            logger.info("Ingestion completed", content_id=content_id, url=url)
+            return True
+
+        except Exception as e:
+            error_msg = str(e)
+            logger.error("Ingestion failed", error=error_msg, url=url)
+
+            # Update job status to failed if job_id provided
+            if job_id:
+                self.storage.update_fetch_job(
+                    job_id,
+                    status="failed",
+                    error_message=error_msg
+                )
+
+            return False
+
+    def _get_plugin_for_url(self, url: str) -> Optional[IngestionPlugin]:
+        """Detect content type and return appropriate plugin.
+
+        Args:
+            url: URL to check
+
+        Returns:
+            Plugin instance or None if unsupported
+        """
+        if is_youtube_url(url):
+            return YouTubePlugin()
+
+        # TODO: Add RSS and podcast plugin detection
+        # elif is_rss_url(url):
+        #     return RSSPlugin()
+        # elif is_podcast_url(url):
+        #     return PodcastPlugin()
+
+        return None
+
+    async def ingest(self, url: str, plugin: IngestionPlugin) -> tuple[ContentMetadata, str]:
+        """Ingest content from URL using plugin.
+
+        Returns (metadata, content_id) on success.
+        """
+        # 1. Fetch metadata
+        metadata = await plugin.fetch_metadata(url)
+        if not metadata:
+            raise ValueError(f"Failed to fetch metadata for {url}")
+
+        # 2. Check duplicate in Engram
+        async with httpx.AsyncClient(base_url=self._engram_url) as client:
+            response = await client.get(f"/api/v1/content/{metadata.content_id}")
+            if response.status_code == 200:
+                logger.info("Content already exists", content_id=metadata.content_id)
+                return metadata, metadata.content_id
+
+        # 3. Fetch content
+        content = await plugin.fetch_content(metadata)
+        if not content:
+            raise ValueError(f"Failed to fetch content for {url}")
+
+        # 4. Transcribe if needed (async call with long timeout)
+        if content.needs_transcription:
+            result = await self._transcribe(content.audio_path)
+            content.text = result["text"]
+            content.segments = result["segments"]
+
+        # 5. Store in Engram
+        async with httpx.AsyncClient(base_url=self._engram_url, timeout=60) as client:
+            response = await client.post(
+                "/api/v1/content",
+                json={
+                    "content_id": metadata.content_id,
+                    "content_type": plugin.source_type,
+                    "title": metadata.title,
+                    "text": content.text,
+                    "url": metadata.url,
+                    "metadata": {
+                        "description": metadata.description,
+                        "author": metadata.author,
+                        "published_at": metadata.published_at,
+                        "duration_seconds": metadata.duration_seconds,
+                        "segments": content.segments,
+                    }
+                }
+            )
+            response.raise_for_status()
+
+        return metadata, metadata.content_id
+
+    async def _transcribe(self, audio_path: Path) -> dict:
+        """Call Transcribe service (async with long timeout)."""
+        async with httpx.AsyncClient(timeout=self._transcribe_timeout) as client:
+            with open(audio_path, "rb") as f:
+                response = await client.post(
+                    f"{self._transcribe_url}/v1/transcribe",
+                    files={"audio": (audio_path.name, f)},
+                    data={"cleanup": "true"}
+                )
+            response.raise_for_status()
+            return response.json()
