@@ -265,6 +265,14 @@ class CuratorStorage:
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
+                # Handle published_at: accept both datetime objects and ISO strings
+                published_at_value = None
+                if published_at:
+                    if isinstance(published_at, str):
+                        published_at_value = published_at
+                    else:
+                        published_at_value = published_at.isoformat()
+
                 cursor.execute("""
                     INSERT INTO ingested_items
                     (subscription_id, source_type, source_id, source_url, title, author, published_at, metadata)
@@ -276,7 +284,7 @@ class CuratorStorage:
                     source_url,
                     title,
                     author,
-                    published_at.isoformat() if published_at else None,
+                    published_at_value,
                     json.dumps(metadata or {}),
                 ))
                 conn.commit()
