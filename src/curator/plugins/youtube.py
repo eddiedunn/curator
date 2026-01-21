@@ -138,7 +138,7 @@ class YouTubePlugin(IngestionPlugin):
     @property
     def source_type(self) -> str:
         """Return unique source type identifier."""
-        return "youtube"
+        return "YOUTUBE"
 
     @property
     def name(self) -> str:
