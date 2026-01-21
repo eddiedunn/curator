@@ -27,6 +27,7 @@ from curator.plugins.base import (
 )
 from curator.plugins.youtube_utils import (
     extract_video_id,
+    extract_channel_id,
     is_youtube_url,
     build_video_url,
 )
@@ -154,6 +155,68 @@ class YouTubePlugin(IngestionPlugin):
             True if URL appears to be a YouTube video URL, False otherwise
         """
         return is_youtube_url(url)
+
+    @with_retry(max_attempts=3)
+    async def fetch_channel_videos(
+        self,
+        channel_url: str,
+        max_videos: int = 50,
+    ) -> List[str]:
+        """
+        Fetch recent video IDs from a YouTube channel.
+
+        Args:
+            channel_url: YouTube channel URL (e.g., https://youtube.com/@username)
+            max_videos: Maximum number of videos to fetch (default 50)
+
+        Returns:
+            List of video IDs (newest first)
+        """
+        channel_id = extract_channel_id(channel_url)
+        if not channel_id:
+            logger.error(f"Could not extract channel ID from: {channel_url}")
+            return []
+
+        try:
+            # Use yt-dlp with extract_flat to get video list without downloading
+            ydl_opts = {
+                **self._ydl_opts,
+                'extract_flat': 'in_playlist',  # Just get list, not full metadata
+                'playlistend': max_videos,  # Limit number of videos
+            }
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                # For channels, yt-dlp can extract the uploads playlist
+                info = ydl.extract_info(channel_url, download=False)
+
+                if not info:
+                    logger.warning(f"No channel info found for: {channel_url}")
+                    return []
+
+                # Get video IDs from entries
+                video_ids = []
+                entries = info.get('entries', [])
+
+                for entry in entries:
+                    if entry and 'id' in entry:
+                        video_ids.append(entry['id'])
+
+                    if len(video_ids) >= max_videos:
+                        break
+
+                logger.info(
+                    f"Fetched {len(video_ids)} videos from channel",
+                    channel_id=channel_id,
+                )
+
+                return video_ids
+
+        except yt_dlp.utils.DownloadError as e:
+            logger.error(f"yt-dlp error fetching channel {channel_url}: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error fetching channel videos: {e}")
+            return []
 
     @with_retry(max_attempts=3)
     async def fetch_metadata(self, source_url: str) -> Optional[ContentMetadata]:
