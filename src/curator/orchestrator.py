@@ -13,6 +13,48 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
+
+def _format_diarized_text(segments: list[dict]) -> str:
+    """Format transcription segments into speaker-labeled paragraphs.
+
+    Groups consecutive same-speaker segments and prefixes each group
+    with the speaker label. Falls back to plain concatenation when
+    segments have no speaker field.
+    """
+    if not segments:
+        return ""
+
+    # Check if any segment has a non-None speaker
+    has_speakers = any(seg.get("speaker") for seg in segments)
+    if not has_speakers:
+        return " ".join(seg.get("text", "").strip() for seg in segments).strip()
+
+    paragraphs = []
+    current_speaker = None
+    current_texts: list[str] = []
+
+    for seg in segments:
+        speaker = seg.get("speaker")
+        text = seg.get("text", "").strip()
+        if not text:
+            continue
+
+        if speaker != current_speaker:
+            if current_texts:
+                label = f"{current_speaker}: " if current_speaker else ""
+                paragraphs.append(f"{label}{' '.join(current_texts)}")
+            current_speaker = speaker
+            current_texts = [text]
+        else:
+            current_texts.append(text)
+
+    # Flush last group
+    if current_texts:
+        label = f"{current_speaker}: " if current_speaker else ""
+        paragraphs.append(f"{label}{' '.join(current_texts)}")
+
+    return "\n\n".join(paragraphs)
+
 class IngestionOrchestrator:
     """Synchronous orchestrator for content ingestion."""
 
@@ -60,25 +102,24 @@ class IngestionOrchestrator:
             # Call the main ingest method (returns metadata and content_id)
             metadata, content_id = await self.ingest(url, plugin)
 
+            # Create ingested_item record with full metadata (always create, subscription is optional)
+            self.storage.create_ingested_item(
+                source_type=plugin.source_type,
+                source_id=content_id,
+                source_url=url,
+                title=metadata.title,
+                author=metadata.author,
+                published_at=metadata.published_at,
+                subscription_id=subscription_id,
+                metadata={"duration_seconds": metadata.duration_seconds}
+            )
+
             # Update job status to completed if job_id provided
             if job_id:
                 self.storage.update_fetch_job(
                     job_id,
                     status="completed",
                     content_id=content_id
-                )
-
-            # Create ingested_item record with full metadata
-            if subscription_id:
-                self.storage.create_ingested_item(
-                    source_type=plugin.source_type,
-                    source_id=content_id,
-                    source_url=url,
-                    title=metadata.title,
-                    author=metadata.author,
-                    published_at=metadata.published_at,
-                    subscription_id=subscription_id,
-                    metadata={"duration_seconds": metadata.duration_seconds}
                 )
 
             logger.info("Ingestion completed", content_id=content_id, url=url)
@@ -141,28 +182,37 @@ class IngestionOrchestrator:
             raise ValueError(f"Failed to fetch content for {url}")
 
         # 4. Transcribe if needed (async call with long timeout)
+        speakers = []
         if content.needs_transcription:
-            result = await self._transcribe(content.audio_path)
-            content.text = result["text"]
+            # When needs_transcription=True, the audio file path is in content.text
+            audio_path = Path(content.text)
+            result = await self._transcribe(audio_path)
+            content.text = _format_diarized_text(result["segments"])
             content.segments = result["segments"]
+            speakers = result.get("speakers", [])
 
         # 5. Store in Engram
+        engram_metadata = {
+            "description": metadata.description,
+            "author": metadata.author,
+            "published_at": metadata.published_at,
+            "duration_seconds": metadata.duration_seconds,
+            "segments": content.segments,
+        }
+        if speakers:
+            engram_metadata["speakers"] = speakers
+            engram_metadata["speaker_count"] = len(speakers)
+
         async with httpx.AsyncClient(base_url=self._engram_url, timeout=60) as client:
             response = await client.post(
                 "/api/v1/content",
                 json={
                     "content_id": metadata.content_id,
-                    "content_type": plugin.source_type,
+                    "content_type": plugin.source_type.lower(),
                     "title": metadata.title,
                     "text": content.text,
                     "url": metadata.url,
-                    "metadata": {
-                        "description": metadata.description,
-                        "author": metadata.author,
-                        "published_at": metadata.published_at,
-                        "duration_seconds": metadata.duration_seconds,
-                        "segments": content.segments,
-                    }
+                    "metadata": engram_metadata,
                 }
             )
             response.raise_for_status()
