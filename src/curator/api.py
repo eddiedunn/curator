@@ -117,7 +117,6 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -136,7 +135,7 @@ async def health_check():
         version="0.1.0",
         uptime_seconds=time.time() - _start_time,
         database_connected=storage.health_check(),
-        daemon_running=settings.daemon_enabled if hasattr(settings, 'daemon_enabled') else False,
+        daemon_running=settings.daemon_enabled,
     )
 
 
@@ -159,7 +158,7 @@ async def detailed_status(api_key: Optional[str] = Depends(verify_api_key)):
             version="0.1.0",
             uptime_seconds=time.time() - _start_time,
             database_connected=storage.health_check(),
-            daemon_running=settings.daemon_enabled if hasattr(settings, 'daemon_enabled') else False,
+            daemon_running=settings.daemon_enabled,
             total_subscriptions=len(subscriptions),
             enabled_subscriptions=enabled_subs,
             total_items=0,  # Would need a count method
@@ -207,7 +206,7 @@ async def create_subscription(
 
     except Exception as e:
         logger.error("Failed to create subscription", error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/v1/subscriptions", response_model=List[SubscriptionResponse])
@@ -232,7 +231,7 @@ async def list_subscriptions(
 
     except Exception as e:
         logger.error("Failed to list subscriptions", error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/v1/subscriptions/{id}", response_model=SubscriptionResponse)
@@ -328,7 +327,7 @@ async def trigger_fetch(
 
     except Exception as e:
         logger.error("Failed to queue fetch", error=str(e), url=request.source_url)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/v1/fetch/{job_id}", response_model=FetchJobResponse)
@@ -381,7 +380,7 @@ async def list_ingested_items(
 
     except Exception as e:
         logger.error("Failed to list items", error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/v1/ingested/{id}", response_model=IngestedItemResponse)

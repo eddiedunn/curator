@@ -27,7 +27,7 @@ These must be deployed and running before Curator.
 Curator requires persistent storage directories on the host:
 
 ```bash
-# On target server (tela)
+# On target server (your-server)
 sudo mkdir -p /opt/curator/data
 sudo mkdir -p /opt/curator/cache
 sudo chown -R $USER:$USER /opt/curator
@@ -59,14 +59,14 @@ CURATOR_LOG_LEVEL=INFO
 
 ### 3. Deploy Using Ansible
 
-From `starblue-infra` directory:
+From `your-infra-repo` directory:
 
 ```bash
 # Deploy Curator service
-ansible-playbook -i inventory/vps/hosts.yml playbooks/deploy-gpu-services.yml --tags curator
+ansible-playbook -i inventory/hosts.yml playbooks/deploy-gpu-services.yml --tags curator
 
 # Or deploy all GPU services in order
-ansible-playbook -i inventory/vps/hosts.yml playbooks/deploy-gpu-services.yml
+ansible-playbook -i inventory/hosts.yml playbooks/deploy-gpu-services.yml
 ```
 
 ### 4. Manual Deployment (Alternative)
@@ -75,17 +75,17 @@ If not using Ansible, deploy manually:
 
 ```bash
 # 1. Copy source code to target server
-rsync -av ~/code/curator/ tela:~/code/curator/ \
+rsync -av ~/code/curator/ youruser@your-server:~/code/curator/ \
   --exclude=.git --exclude=__pycache__ --exclude=.venv
 
 # 2. Build container image on target
-ssh tela 'cd ~/code/curator && podman build -t localhost/curator:latest -f deploy/Dockerfile .'
+ssh youruser@your-server 'cd ~/code/curator && podman build -t localhost/curator:latest -f deploy/Dockerfile .'
 
 # 3. Install Quadlet file
-scp ~/code/curator/deploy/curator.container tela:~/.config/containers/systemd/curator.container
+scp ~/code/curator/deploy/curator.container youruser@your-server:~/.config/containers/systemd/curator.container
 
 # 4. Reload systemd and start service
-ssh tela 'systemctl --user daemon-reload && systemctl --user start curator.service'
+ssh youruser@your-server 'systemctl --user daemon-reload && systemctl --user start curator.service'
 ```
 
 ### 5. Verify Deployment
@@ -216,20 +216,20 @@ Common issues:
 2. Re-run Ansible deployment:
 
 ```bash
-ansible-playbook -i inventory/vps/hosts.yml playbooks/deploy-gpu-services.yml --tags curator
+ansible-playbook -i inventory/hosts.yml playbooks/deploy-gpu-services.yml --tags curator
 ```
 
 Or manually:
 
 ```bash
 # 1. Sync updated code
-rsync -av ~/code/curator/ tela:~/code/curator/
+rsync -av ~/code/curator/ youruser@your-server:~/code/curator/
 
 # 2. Rebuild image
-ssh tela 'cd ~/code/curator && podman build -t localhost/curator:latest -f deploy/Dockerfile .'
+ssh youruser@your-server 'cd ~/code/curator && podman build -t localhost/curator:latest -f deploy/Dockerfile .'
 
 # 3. Restart service (Quadlet will use new image)
-ssh tela 'systemctl --user restart curator.service'
+ssh youruser@your-server 'systemctl --user restart curator.service'
 ```
 
 ### Database Migrations
@@ -279,14 +279,14 @@ Key settings:
 To expose Curator over Tailscale mesh network, configure Caddy reverse proxy:
 
 ```
-curator.mesh.starbluesolutions.net {
+curator.mesh.your-domain.com {
     reverse_proxy localhost:8950
 }
 ```
 
 This allows access from other mesh nodes via:
 ```bash
-curl https://curator.mesh.starbluesolutions.net/health
+curl https://curator.mesh.your-domain.com/health
 ```
 
 ## Backup and Recovery
@@ -320,7 +320,4 @@ systemctl --user start curator.service
 
 ## Related Documentation
 
-- [Engram Deployment Guide](../../engram/deploy/README.md)
-- [Transcribe Deployment Guide](../../transcribe/deploy/README.md)
-- [GPU Services Ansible Playbook](../../../PAI/gpu-services-09-ansible.yaml)
 - [Curator API Documentation](../docs/api.md) (if available)
