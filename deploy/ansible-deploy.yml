@@ -1,0 +1,71 @@
+---
+# Deploy curator to tela
+#
+# Usage (run on tela with local connection):
+#   ansible-playbook -i "127.0.0.1," deploy/ansible-deploy.yml \
+#     --connection local -e curator_src_dir=<path>
+#
+# Variables:
+#   curator_src_dir: path to checked-out repo on tela
+
+- name: Deploy curator
+  hosts: all
+  gather_facts: false
+  # No global become - podman build runs as the connected user (eddie)
+
+  vars:
+    service_name: curator
+    quadlet_dir: /etc/containers/systemd
+    host_port: 8950
+    data_dir: /opt/curator/data
+    cache_dir: /opt/curator/cache
+    curator_src_dir: "{{ ansible_env.HOME }}/curator"
+
+  tasks:
+    - name: Ensure data directories exist (root)
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: eddie
+        group: eddie
+        mode: "0755"
+      loop:
+        - "{{ data_dir }}"
+        - "{{ cache_dir }}"
+      become: true
+
+    - name: Build container image from source (as eddie)
+      ansible.builtin.command:
+        cmd: >
+          podman build
+          -t localhost/curator:latest
+          -f deploy/Dockerfile
+          .
+        chdir: "{{ curator_src_dir }}"
+      changed_when: true
+
+    - name: Copy quadlet container unit file (root)
+      ansible.builtin.copy:
+        src: "{{ curator_src_dir }}/deploy/curator.container"
+        dest: "{{ quadlet_dir }}/{{ service_name }}.container"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify: Reload and restart service
+
+  handlers:
+    - name: Reload and restart service
+      block:
+        - name: Reload systemd daemon
+          ansible.builtin.systemd:
+            daemon_reload: true
+          become: true
+
+        - name: Restart curator service
+          ansible.builtin.systemd:
+            name: "{{ service_name }}"
+            state: restarted
+            enabled: true
+          become: true
