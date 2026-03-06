@@ -11,7 +11,7 @@
 - name: Deploy curator
   hosts: all
   gather_facts: false
-  # No global become - podman build runs as the connected user (eddie)
+  # No global become - tasks that need root use per-task become: true
 
   vars:
     service_name: curator
@@ -34,7 +34,7 @@
         - "{{ cache_dir }}"
       become: true
 
-    - name: Build container image from source (as eddie)
+    - name: Build container image from source
       ansible.builtin.command:
         cmd: >
           podman build
@@ -43,6 +43,7 @@
           .
         chdir: "{{ curator_src_dir }}"
       changed_when: true
+      become: true
 
     - name: Copy quadlet container unit file (root)
       ansible.builtin.copy:
