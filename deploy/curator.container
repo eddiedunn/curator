@@ -7,11 +7,13 @@ Image=localhost/curator:latest
 ContainerName=curator
 
 Network=gpu-services
+Network=engram-net
 PublishPort=127.0.0.1:8950:8950
 
 Environment=CURATOR_ENGRAM_API_URL=http://engram:8800
 Environment=CURATOR_TRANSCRIBE_SERVICE_URL=http://diarized-transcriber:8000
 Environment=CURATOR_DATABASE_URL=sqlite:////data/curator.db
+Environment=CURATOR_DAEMON_ENABLED=true
 
 Volume=/opt/curator/data:/data:Z
 Volume=/opt/curator/cache:/cache:Z
