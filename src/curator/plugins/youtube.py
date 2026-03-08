@@ -8,7 +8,6 @@ It handles:
 """
 
 import asyncio
-import json
 import logging
 import random
 import re
@@ -102,15 +101,13 @@ def with_retry(
 class YouTubePlugin(IngestionPlugin):
     """Plugin for ingesting YouTube video content.
 
-    This plugin extracts metadata and content from YouTube videos using yt-dlp.
-    It prefers existing subtitles for cost efficiency, but can fall back to
-    audio transcription via Whisper if subtitles are unavailable.
+    Always downloads audio and sends to the diarized transcriber.
+    Subtitles are never used — audio is required for speaker diarization.
 
     Supports:
     - YouTube video URLs in standard formats (youtube.com/watch, youtu.be)
     - Channel URLs for listing recent videos
-    - Subtitle extraction with automatic retry on rate limiting
-    - Audio download for transcription when subtitles unavailable
+    - Audio download + diarized transcription (always)
     """
 
     def __init__(self, cookies_path: Optional[str] = None):
@@ -317,166 +314,30 @@ class YouTubePlugin(IngestionPlugin):
             return None
 
     async def fetch_content(self, metadata: ContentMetadata) -> Optional[ContentResult]:
-        """Fetch the full content for a YouTube video.
+        """Fetch audio for diarized transcription.
 
-        Uses subtitles if ANY exist (even sparse ones for music videos).
-        Only falls back to Whisper if yt-dlp finds NO subtitles at all.
-
-        Strategy:
-        1. Try to get subtitles via yt-dlp (fast, no download)
-        2. If ANY subtitles exist (even sparse/low-quality), use them
-        3. Only use Whisper if NO subtitles are available
-
-        This avoids expensive Whisper transcription for music videos with
-        sparse captions - user prefers videos with proper transcripts anyway.
+        Always downloads audio and sends to the diarized transcriber.
+        Subtitles are never used — only audio gives us speaker diarization.
 
         Args:
             metadata: Metadata from fetch_metadata()
 
         Returns:
-            ContentResult with video transcript/audio, or None on error
+            ContentResult with audio path set, needs_transcription=True
         """
         video_id = metadata.content_id
 
-        # Try subtitles first
-        transcript, segments = await self._try_get_subtitles(video_id)
-
-        # Use subtitles if ANY exist, regardless of quality/density
-        # Check segments instead of transcript text to handle sparse subtitles
-        if segments:
-            return ContentResult(
-                text=transcript or "",  # Use empty string if no text but segments exist
-                segments=segments,
-                source="youtube_subtitles",
-                needs_transcription=False,
-            )
-
-        # No subtitles at all - need to download audio for Whisper
-        logger.info(f"No subtitles found for {video_id}, will use Whisper")
         audio_path = await self._download_audio(video_id)
 
         if audio_path:
             return ContentResult(
-                text=str(audio_path),  # Path to audio file
+                text=str(audio_path),
                 segments=[],
-                source="whisper_pending",
+                source="diarized_transcriber",
                 needs_transcription=True,
             )
 
         return None
-
-    @with_retry(max_attempts=3)
-    async def _try_get_subtitles(
-        self,
-        video_id: str,
-        languages: List[str] = None,
-    ) -> tuple[Optional[str], List[Dict]]:
-        """
-        Try to get subtitles using yt-dlp.
-
-        Args:
-            video_id: YouTube video ID
-            languages: Preferred languages in order (defaults to ['en', 'en-US', 'en-GB'])
-
-        Returns:
-            Tuple of (transcript_text, segments_with_timestamps)
-        """
-        if languages is None:
-            languages = ['en', 'en-US', 'en-GB']
-
-        url = f"https://youtube.com/watch?v={video_id}"
-
-        # Use temp directory for subtitle download
-        with tempfile.TemporaryDirectory() as tmpdir:
-            ydl_opts = {
-                **self._ydl_opts,
-                'writesubtitles': True,
-                'writeautomaticsub': True,  # Also try auto-generated
-                'subtitleslangs': languages,
-                'subtitlesformat': 'json3',
-                'skip_download': True,
-                'quiet': True,
-                'no_warnings': True,
-                'outtmpl': f'{tmpdir}/%(id)s.%(ext)s',
-            }
-
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    # Download subtitle files
-                    ydl.download([url])
-
-                    # Try to find subtitle file
-                    tmpdir_path = Path(tmpdir)
-
-                    # Try each language in order
-                    for lang in languages:
-                        subtitle_file = tmpdir_path / f'{video_id}.{lang}.json3'
-                        if subtitle_file.exists():
-                            return await self._parse_subtitles(subtitle_file)
-
-                    # Try auto-generated with -orig suffix
-                    for lang in languages:
-                        subtitle_file = tmpdir_path / f'{video_id}.{lang}-orig.json3'
-                        if subtitle_file.exists():
-                            return await self._parse_subtitles(subtitle_file)
-
-                    logger.debug(f"No subtitles found for {video_id}")
-                    return None, []
-
-            except Exception as e:
-                logger.warning(f"Error getting subtitles for {video_id}: {e}")
-                return None, []
-
-    async def _parse_subtitles(
-        self,
-        subtitle_file: Path,
-    ) -> tuple[str, List[Dict]]:
-        """Parse subtitle data into text and segments.
-
-        Args:
-            subtitle_file: Path to subtitle file in json3 format
-
-        Returns:
-            Tuple of (full_text, segments_list)
-            where segments_list contains dicts with 'text', 'start', 'end'
-        """
-        try:
-            data = json.loads(subtitle_file.read_text())
-
-            text_parts = []
-            segments = []
-
-            for event in data.get('events', []):
-                # Extract start time (in milliseconds, convert to seconds)
-                start_time = event.get('tStartMs', 0) / 1000.0
-
-                # Extract duration and calculate end time
-                duration = event.get('dDurationMs', 0) / 1000.0
-                end_time = start_time + duration
-
-                # Extract text from segments
-                segment_text = []
-                if 'segs' in event:
-                    for seg in event['segs']:
-                        if 'utf8' in seg:
-                            segment_text.append(seg['utf8'])
-
-                if segment_text:
-                    text = ''.join(segment_text).replace('\n', ' ').strip()
-                    if text:
-                        text_parts.append(text)
-                        segments.append({
-                            'text': text,
-                            'start': start_time,
-                            'end': end_time,
-                        })
-
-            full_text = ' '.join(text_parts)
-            return full_text, segments
-
-        except Exception as e:
-            logger.error(f"Error parsing subtitle file {subtitle_file}: {e}")
-            return "", []
 
     @with_retry(max_attempts=2)  # Fewer retries for downloads (expensive)
     async def _download_audio(self, video_id: str) -> Optional[Path]:
