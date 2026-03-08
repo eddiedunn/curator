@@ -36,16 +36,15 @@ def settings(temp_dir):
 @pytest.fixture
 def daemon(storage, settings):
     """Create daemon instance."""
-    # Add daemon_check_interval_seconds if not present
-    if not hasattr(settings, 'daemon_check_interval_seconds'):
-        settings.daemon_check_interval_seconds = settings.check_interval
-
     daemon = SubscriptionDaemon(storage, settings)
     yield daemon
 
     # Clean up
-    if daemon.running:
-        daemon.shutdown()
+    try:
+        if daemon.running:
+            daemon.shutdown()
+    except Exception:
+        daemon.running = False
 
 
 def test_daemon_initialization(daemon, storage, settings):
@@ -93,20 +92,27 @@ def test_daemon_shutdown(daemon):
 
 def test_daemon_scheduler_configuration(daemon, settings):
     """Test scheduler is configured with correct interval."""
+    mock_loop = MagicMock()
+    # call_soon should immediately invoke the callback so the scheduler job is added
+    mock_loop.call_soon = lambda fn: fn()
+    mock_loop.run_forever.side_effect = KeyboardInterrupt
+    mock_loop.close = MagicMock()
+
     with patch.object(daemon, '_acquire_lock'):
         with patch.object(daemon.scheduler, 'start'):
-            with patch('curator.daemon.asyncio.get_event_loop') as mock_loop:
-                mock_loop.return_value.run_forever.side_effect = KeyboardInterrupt
+            with patch.object(daemon.scheduler, 'shutdown'):
+                with patch('curator.daemon.asyncio.new_event_loop', return_value=mock_loop):
+                    with patch('curator.daemon.asyncio.set_event_loop'):
+                        with patch('curator.daemon.signal.signal'):
+                            try:
+                                daemon.run()
+                            except (KeyboardInterrupt, SystemExit):
+                                pass
 
-                try:
-                    daemon.run()
-                except (KeyboardInterrupt, SystemExit):
-                    pass
-
-                # Check that scheduler job was added
-                jobs = daemon.scheduler.get_jobs()
-                assert len(jobs) == 1
-                assert jobs[0].id == "check_subscriptions"
+                            # Check that scheduler job was added
+                            jobs = daemon.scheduler.get_jobs()
+                            assert len(jobs) == 1
+                            assert jobs[0].id == "check_subscriptions"
 
 
 @pytest.mark.asyncio
@@ -144,7 +150,7 @@ async def test_process_subscription_no_plugin(daemon):
     }
 
     with patch.object(daemon.storage, 'update_subscription') as mock_update:
-        with patch.object(daemon.orchestrator, 'get_plugin_for_url', return_value=None):
+        with patch.object(daemon.orchestrator, '_get_plugin_for_url', return_value=None):
             await daemon._process_subscription(subscription)
 
             # Should update subscription with error status
@@ -172,7 +178,7 @@ async def test_process_subscription_existing_content(daemon):
 
     existing_item = {"id": 1, "source_id": "test123"}
 
-    with patch.object(daemon.orchestrator, 'get_plugin_for_url', return_value=mock_plugin):
+    with patch.object(daemon.orchestrator, '_get_plugin_for_url', return_value=mock_plugin):
         with patch.object(daemon.storage, 'get_ingested_item_by_source', return_value=existing_item):
             with patch.object(daemon.storage, 'update_subscription'):
                 with patch.object(daemon.orchestrator, 'ingest_url') as mock_ingest:
@@ -199,7 +205,7 @@ async def test_process_subscription_new_content(daemon):
     mock_plugin.fetch_metadata = AsyncMock(return_value=mock_metadata)
     mock_plugin.source_type = "youtube"
 
-    with patch.object(daemon.orchestrator, 'get_plugin_for_url', return_value=mock_plugin):
+    with patch.object(daemon.orchestrator, '_get_plugin_for_url', return_value=mock_plugin):
         with patch.object(daemon.storage, 'get_ingested_item_by_source', return_value=None):
             with patch.object(daemon.storage, 'update_subscription'):
                 with patch.object(daemon.orchestrator, 'ingest_url', new_callable=AsyncMock) as mock_ingest:
@@ -223,7 +229,7 @@ async def test_process_subscription_error_handling(daemon):
     }
 
     with patch.object(daemon.storage, 'update_subscription') as mock_update:
-        with patch.object(daemon.orchestrator, 'get_plugin_for_url', side_effect=Exception("Test error")):
+        with patch.object(daemon.orchestrator, '_get_plugin_for_url', side_effect=Exception("Test error")):
             await daemon._process_subscription(subscription)
 
             # Should update subscription with error status

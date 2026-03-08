@@ -18,6 +18,7 @@ class CuratorSettings(BaseSettings):
     transcribe_service_url: str = "http://localhost:8720"
 
     # Daemon
+    daemon_enabled: bool = False
     check_interval: int = 3600  # seconds
 
     # API server
