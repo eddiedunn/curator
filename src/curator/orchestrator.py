@@ -242,7 +242,7 @@ class IngestionOrchestrator:
                 response = await client.post(
                     f"{self._transcribe_url}/v1/transcribe",
                     files={"audio": (audio_path.name, f)},
-                    data={"cleanup": "true"}
+                    data={"cleanup": "true", "include_embeddings": "true"}
                 )
             response.raise_for_status()
             return response.json()
