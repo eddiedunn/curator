@@ -27,6 +27,7 @@
           .
         chdir: "{{ curator_src_dir }}"
       changed_when: true
+      notify: Reload and restart curator
 
     - name: Copy quadlet container unit file
       ansible.builtin.copy:
