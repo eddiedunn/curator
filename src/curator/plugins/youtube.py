@@ -156,6 +156,27 @@ class YouTubePlugin(IngestionPlugin):
         """
         return is_youtube_url(url)
 
+    # Valid YouTube video IDs are exactly 11 alphanumeric/hyphen/underscore chars.
+    _VIDEO_ID_RE = re.compile(r'^[A-Za-z0-9_-]{11}$')
+
+    @staticmethod
+    def _normalize_channel_url(channel_url: str) -> str:
+        """Append /videos to a channel URL if it points at the channel root.
+
+        Without /videos, yt-dlp's extract_flat='in_playlist' resolves the
+        channel homepage and returns tab entries (Videos/Shorts/Live) whose
+        'id' field is the 24-char channel ID, not individual video IDs.
+        Pointing directly at the /videos tab forces yt-dlp to enumerate
+        actual video entries.
+        """
+        url = channel_url.rstrip('/')
+        # Already targeting a specific tab or playlist — leave as-is.
+        if any(url.endswith(tab) for tab in ('/videos', '/shorts', '/live', '/streams', '/playlists')):
+            return url
+        if '/playlist' in url or '/watch' in url:
+            return url
+        return url + '/videos'
+
     @with_retry(max_attempts=3)
     async def fetch_channel_videos(
         self,
@@ -177,6 +198,12 @@ class YouTubePlugin(IngestionPlugin):
             logger.error(f"Could not extract channel ID from: {channel_url}")
             return []
 
+        # Normalise to the /videos tab so yt-dlp returns individual video IDs.
+        # A bare @handle URL resolves to the channel homepage which, with
+        # extract_flat='in_playlist', yields tab entries whose 'id' is the
+        # 24-char channel ID rather than a video ID.
+        videos_url = self._normalize_channel_url(channel_url)
+
         try:
             # Use yt-dlp with extract_flat to get video list without downloading
             ydl_opts = {
@@ -187,19 +214,30 @@ class YouTubePlugin(IngestionPlugin):
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 # For channels, yt-dlp can extract the uploads playlist
-                info = ydl.extract_info(channel_url, download=False)
+                info = ydl.extract_info(videos_url, download=False)
 
                 if not info:
                     logger.warning(f"No channel info found for: {channel_url}")
                     return []
 
-                # Get video IDs from entries
+                # Get video IDs from entries, filtering out any non-video IDs.
+                # Defensive guard: channel IDs (24-char "UC...") or other
+                # non-video entries are rejected here even if the URL
+                # normalisation above already prevents them in practice.
                 video_ids = []
                 entries = info.get('entries', [])
 
                 for entry in entries:
-                    if entry and 'id' in entry:
-                        video_ids.append(entry['id'])
+                    if not entry:
+                        continue
+                    vid_id = entry.get('id', '')
+                    if not self._VIDEO_ID_RE.match(vid_id):
+                        logger.warning(
+                            f"Skipping non-video ID from channel listing: {vid_id!r}",
+                            channel_id=channel_id,
+                        )
+                        continue
+                    video_ids.append(vid_id)
 
                     if len(video_ids) >= max_videos:
                         break
