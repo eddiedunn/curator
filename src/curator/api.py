@@ -11,6 +11,7 @@ import structlog
 
 from curator.config import get_settings
 from curator.storage import CuratorStorage
+from curator.daemon import SubscriptionDaemon
 from curator.models import (
     SubscriptionCreate,
     SubscriptionUpdate,
@@ -88,19 +89,26 @@ async def lifespan(app: FastAPI):
     logger.info("Curator API service started",
                 database_connected=storage.health_check())
 
+    # Start the subscription daemon if enabled
+    settings = get_settings()
+    app.state.daemon = None
+    if settings.daemon_enabled:
+        logger.info("Daemon enabled — starting SubscriptionDaemon")
+        daemon = SubscriptionDaemon(storage, settings)
+        await daemon.start()
+        app.state.daemon = daemon
+        logger.info("SubscriptionDaemon started")
+    else:
+        logger.info("Daemon disabled (CURATOR_DAEMON_ENABLED not set)")
+
     yield
 
     # Shutdown
     logger.info("Shutting down Curator API service")
 
-    # Cleanup if needed
-    if _storage:
-        # Storage cleanup (if any)
-        pass
-
-    if _orchestrator:
-        # Orchestrator cleanup (if any)
-        pass
+    # Stop daemon gracefully if it was started
+    if app.state.daemon is not None:
+        await app.state.daemon.stop()
 
     logger.info("Curator API service stopped")
 
@@ -128,14 +136,16 @@ app.add_middleware(
 async def health_check():
     """Health check endpoint."""
     storage = get_storage()
-    settings = get_settings()
+
+    daemon = getattr(app.state, "daemon", None)
+    daemon_running = daemon is not None and daemon.running
 
     return HealthResponse(
         status="healthy",
         version="0.1.0",
         uptime_seconds=time.time() - _start_time,
         database_connected=storage.health_check(),
-        daemon_running=settings.daemon_enabled,
+        daemon_running=daemon_running,
     )
 
 
@@ -143,12 +153,15 @@ async def health_check():
 async def detailed_status(api_key: Optional[str] = Depends(verify_api_key)):
     """Detailed status endpoint."""
     storage = get_storage()
-    settings = get_settings()
+
+    daemon = getattr(app.state, "daemon", None)
+    daemon_running = daemon is not None and daemon.running
 
     # Get counts
+    db_connected = storage.health_check()
     try:
         subscriptions = storage.list_subscriptions()
-        items = storage.list_ingested_items(limit=1)  # Just to check if items exist
+        total_items = storage.count_ingested_items()
 
         # Count by status
         enabled_subs = sum(1 for s in subscriptions if s.get('enabled', False))
@@ -157,11 +170,11 @@ async def detailed_status(api_key: Optional[str] = Depends(verify_api_key)):
             status="healthy",
             version="0.1.0",
             uptime_seconds=time.time() - _start_time,
-            database_connected=storage.health_check(),
-            daemon_running=settings.daemon_enabled,
+            database_connected=db_connected,
+            daemon_running=daemon_running,
             total_subscriptions=len(subscriptions),
             enabled_subscriptions=enabled_subs,
-            total_items=0,  # Would need a count method
+            total_items=total_items,
         )
     except Exception as e:
         logger.error("Failed to get detailed status", error=str(e))
@@ -169,8 +182,8 @@ async def detailed_status(api_key: Optional[str] = Depends(verify_api_key)):
             status="degraded",
             version="0.1.0",
             uptime_seconds=time.time() - _start_time,
-            database_connected=False,
-            daemon_running=False,
+            database_connected=db_connected,
+            daemon_running=daemon_running,
             total_subscriptions=0,
             enabled_subscriptions=0,
             total_items=0,

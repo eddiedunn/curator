@@ -239,7 +239,9 @@ def daemon():
     from curator.daemon import SubscriptionDaemon
 
     settings = get_settings()
-    storage = CuratorStorage()
+    # Extract database path from URL (sqlite:///path/to/db.db -> path/to/db.db)
+    db_path = settings.database_url.replace("sqlite:///", "")
+    storage = CuratorStorage(database_path=db_path)
 
     console.print("[bold green]Starting Curator daemon...[/bold green]")
 

@@ -87,6 +87,7 @@ class IngestionOrchestrator:
         Returns:
             True on success, False on failure
         """
+        item_id: int | None = None
         try:
             # Update job status to processing if job_id provided
             if job_id:
@@ -102,9 +103,12 @@ class IngestionOrchestrator:
             # Call the main ingest method (returns metadata and content_id)
             metadata, content_id = await self.ingest(url, plugin)
 
+            # Normalize source_type to lowercase before storing
+            source_type = plugin.source_type.lower()
+
             # Create ingested_item record with full metadata (always create, subscription is optional)
-            self.storage.create_ingested_item(
-                source_type=plugin.source_type,
+            item_id = self.storage.create_ingested_item(
+                source_type=source_type,
                 source_id=content_id,
                 source_url=url,
                 title=metadata.title,
@@ -113,6 +117,10 @@ class IngestionOrchestrator:
                 subscription_id=subscription_id,
                 metadata={"duration_seconds": metadata.duration_seconds}
             )
+
+            # Update ingested item status to completed (item_id is None if duplicate — already completed)
+            if item_id is not None:
+                self.storage.update_ingested_item(item_id, status="completed")
 
             # Update job status to completed if job_id provided
             if job_id:
@@ -128,6 +136,14 @@ class IngestionOrchestrator:
         except Exception as e:
             error_msg = str(e)
             logger.error("Ingestion failed", error=error_msg, url=url)
+
+            # Update ingested item status to failed if it was created
+            if item_id is not None:
+                self.storage.update_ingested_item(
+                    item_id,
+                    status="failed",
+                    error_message=error_msg
+                )
 
             # Update job status to failed if job_id provided
             if job_id:

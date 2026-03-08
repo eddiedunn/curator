@@ -23,6 +23,7 @@ class SubscriptionType(str, Enum):
 class IngestionStatus(str, Enum):
     """Ingestion job status enum."""
     PENDING = "pending"
+    PROCESSING = "processing"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     FAILED = "failed"

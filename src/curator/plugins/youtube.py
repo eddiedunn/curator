@@ -138,7 +138,7 @@ class YouTubePlugin(IngestionPlugin):
     @property
     def source_type(self) -> str:
         """Return unique source type identifier."""
-        return "YOUTUBE"
+        return "youtube"
 
     @property
     def name(self) -> str:
@@ -281,12 +281,16 @@ class YouTubePlugin(IngestionPlugin):
     async def fetch_content(self, metadata: ContentMetadata) -> Optional[ContentResult]:
         """Fetch the full content for a YouTube video.
 
-        Attempts to get subtitles first (preferred, fast, no transcription needed).
-        Falls back to audio download if subtitles unavailable.
+        Uses subtitles if ANY exist (even sparse ones for music videos).
+        Only falls back to Whisper if yt-dlp finds NO subtitles at all.
 
         Strategy:
         1. Try to get subtitles via yt-dlp (fast, no download)
-        2. If no subtitles, download audio for Whisper transcription
+        2. If ANY subtitles exist (even sparse/low-quality), use them
+        3. Only use Whisper if NO subtitles are available
+
+        This avoids expensive Whisper transcription for music videos with
+        sparse captions - user prefers videos with proper transcripts anyway.
 
         Args:
             metadata: Metadata from fetch_metadata()
@@ -299,16 +303,18 @@ class YouTubePlugin(IngestionPlugin):
         # Try subtitles first
         transcript, segments = await self._try_get_subtitles(video_id)
 
-        if transcript:
+        # Use subtitles if ANY exist, regardless of quality/density
+        # Check segments instead of transcript text to handle sparse subtitles
+        if segments:
             return ContentResult(
-                text=transcript,
+                text=transcript or "",  # Use empty string if no text but segments exist
                 segments=segments,
                 source="youtube_subtitles",
                 needs_transcription=False,
             )
 
-        # No subtitles - need to download audio for Whisper
-        logger.info(f"No subtitles for {video_id}, will use Whisper")
+        # No subtitles at all - need to download audio for Whisper
+        logger.info(f"No subtitles found for {video_id}, will use Whisper")
         audio_path = await self._download_audio(video_id)
 
         if audio_path:

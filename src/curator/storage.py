@@ -352,6 +352,13 @@ class CuratorStorage:
             cursor.execute(query, params)
             return [self._row_to_dict(row) for row in cursor.fetchall()]
 
+    def count_ingested_items(self) -> int:
+        """Count total ingested items."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM ingested_items")
+            return cursor.fetchone()[0]
+
     def update_ingested_item(
         self,
         item_id: int,

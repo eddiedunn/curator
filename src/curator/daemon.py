@@ -29,6 +29,7 @@ class SubscriptionDaemon:
         self.scheduler = AsyncIOScheduler()
         self.running = False
         self._lock_file = None
+        self._task: asyncio.Task | None = None
 
     def _acquire_lock(self):
         """Acquire file lock to ensure single instance."""
@@ -42,8 +43,44 @@ class SubscriptionDaemon:
         except BlockingIOError:
             raise RuntimeError("Another daemon instance is already running")
 
+    async def start(self):
+        """Start the daemon as a background asyncio task (for use inside a running event loop).
+
+        This method is designed to be called from an async context (e.g. FastAPI lifespan).
+        It starts the APScheduler on the current event loop and records actual running state.
+        """
+        logger.info("Starting subscription daemon (async)")
+
+        # Schedule subscription checks on the current event loop's scheduler
+        self.scheduler.add_job(
+            self._check_subscriptions,
+            trigger=IntervalTrigger(seconds=self.settings.check_interval),
+            id="check_subscriptions",
+            name="Check subscriptions for new content",
+            replace_existing=True,
+        )
+
+        self.scheduler.start()
+        self.running = True
+
+        logger.info(
+            "Daemon started",
+            check_interval_seconds=self.settings.check_interval,
+        )
+
+    async def stop(self):
+        """Stop the daemon gracefully (for use inside a running event loop)."""
+        if self.running:
+            logger.info("Stopping daemon")
+            self.scheduler.shutdown(wait=False)
+            self.running = False
+            logger.info("Daemon stopped")
+
     def run(self):
-        """Start the daemon."""
+        """Start the daemon in standalone mode (its own event loop).
+
+        This is the entry point when running the daemon as a separate process.
+        """
         logger.info("Starting subscription daemon")
 
         # Acquire lock to ensure single instance
