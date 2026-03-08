@@ -281,8 +281,8 @@ async def test_fetch_content(plugin):
 
 **Features:**
 - Metadata extraction via yt-dlp
-- Subtitle/caption fetching (multiple languages)
-- Audio download for transcription fallback
+- Audio download via yt-dlp (always — no subtitles)
+- Diarized transcription via diarized-transcriber (Whisper + pyannote)
 - Retry with exponential backoff
 - Cookie support for age-restricted videos
 
@@ -293,7 +293,7 @@ CURATOR_YOUTUBE_COOKIES_PATH=/path/to/cookies.txt
 
 **Cost Estimation:**
 - API calls: Free (yt-dlp uses public API)
-- Transcription: Only if no subtitles available
+- Transcription: Always (diarized-transcriber, never subtitles)
 - Estimates ~3 tokens/second of speech
 
 **Implementation Details:**
@@ -334,22 +334,12 @@ class YouTubePlugin(IngestionPlugin):
         )
 
     async def fetch_content(self, metadata: ContentMetadata) -> Optional[ContentResult]:
-        # Try subtitles first
-        subtitles = await self._fetch_subtitles(metadata.content_id)
-        if subtitles:
-            return ContentResult(
-                text=subtitles['text'],
-                segments=subtitles['segments'],
-                source='youtube_subtitles',
-                needs_transcription=False
-            )
-
-        # Fall back to audio download
+        # Always download audio — subtitles are never used (no speaker info)
         audio_path = await self._download_audio(metadata.content_id)
         return ContentResult(
             text=str(audio_path),
-            source='audio_download',
-            needs_transcription=True
+            source='diarized_transcriber',
+            needs_transcription=True  # Always True
         )
 ```
 
