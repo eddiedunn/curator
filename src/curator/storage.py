@@ -359,6 +359,17 @@ class CuratorStorage:
             cursor.execute("SELECT COUNT(*) FROM ingested_items")
             return cursor.fetchone()[0]
 
+    def get_ingested_item_counts_by_status(self) -> dict:
+        """Return a dict of {status: count} for all ingested item statuses."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT status, COUNT(*) as count
+                FROM ingested_items
+                GROUP BY status
+            """)
+            return {row["status"]: row["count"] for row in cursor.fetchall()}
+
     def update_ingested_item(
         self,
         item_id: int,

@@ -120,6 +120,11 @@ class StatusResponse(BaseModel):
     total_subscriptions: int
     enabled_subscriptions: int
     total_items: int
+    completed_items: int = 0
+    failed_items: int = 0
+    pending_items: int = 0
+    processing_items: int = 0
+    check_interval_seconds: int = 3600
 
 
 class HealthResponse(BaseModel):

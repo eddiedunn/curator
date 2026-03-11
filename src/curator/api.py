@@ -159,9 +159,11 @@ async def detailed_status(api_key: Optional[str] = Depends(verify_api_key)):
 
     # Get counts
     db_connected = storage.health_check()
+    settings = get_settings()
     try:
         subscriptions = storage.list_subscriptions()
         total_items = storage.count_ingested_items()
+        counts_by_status = storage.get_ingested_item_counts_by_status()
 
         # Count by status
         enabled_subs = sum(1 for s in subscriptions if s.get('enabled', False))
@@ -175,6 +177,11 @@ async def detailed_status(api_key: Optional[str] = Depends(verify_api_key)):
             total_subscriptions=len(subscriptions),
             enabled_subscriptions=enabled_subs,
             total_items=total_items,
+            completed_items=counts_by_status.get("completed", 0),
+            failed_items=counts_by_status.get("failed", 0),
+            pending_items=counts_by_status.get("pending", 0),
+            processing_items=counts_by_status.get("processing", 0),
+            check_interval_seconds=settings.check_interval,
         )
     except Exception as e:
         logger.error("Failed to get detailed status", error=str(e))
@@ -187,6 +194,7 @@ async def detailed_status(api_key: Optional[str] = Depends(verify_api_key)):
             total_subscriptions=0,
             enabled_subscriptions=0,
             total_items=0,
+            check_interval_seconds=settings.check_interval,
         )
 
 
