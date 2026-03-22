@@ -3,7 +3,8 @@ Description=Curator Service
 After=network-online.target engram.service diarized-transcriber.service
 
 [Container]
-Image=localhost/curator:latest
+Image=registry.starbluesolutions.net/curator:latest
+PullPolicy=newer
 ContainerName=curator
 
 Network=gpu-services

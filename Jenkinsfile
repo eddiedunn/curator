@@ -73,7 +73,8 @@ pipeline {
                     -i "127.0.0.1," \
                     "${DEPLOY_PLAYBOOK}" \
                     --connection local \
-                    -e "curator_src_dir=${WORKSPACE}"'''
+                    -e "curator_src_dir=${WORKSPACE}" \
+                    -e "build_number=${BUILD_NUMBER}"'''
             }
         }
     }
