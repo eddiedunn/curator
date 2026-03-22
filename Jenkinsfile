@@ -43,7 +43,7 @@ pipeline {
             steps {
                 sh 'uv sync --extra dev --frozen'
                 catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
-                    sh '.venv/bin/pytest tests/ --tb=short -q'
+                    sh '.venv/bin/pytest tests/ --tb=short -q --cov=src --cov-report=xml:coverage.xml'
                 }
             }
         }
@@ -62,6 +62,7 @@ pipeline {
                         -Dsonar.projectKey="${SONAR_PROJECT_KEY}" \
                         -Dsonar.sources=src \
                         -Dsonar.tests=tests \
+                        -Dsonar.python.coverage.reportPaths=coverage.xml \
                         -Dsonar.host.url="${SONAR_HOST_URL}" \
                         -Dsonar.token="${SONAR_TOKEN}"'''
                 }
