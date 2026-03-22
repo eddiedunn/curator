@@ -4,7 +4,7 @@ After=network-online.target engram.service diarized-transcriber.service
 
 [Container]
 Image=registry.starbluesolutions.net/curator:latest
-PullPolicy=newer
+Pull=newer
 ContainerName=curator
 
 Network=gpu-services
