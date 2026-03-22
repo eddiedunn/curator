@@ -18,11 +18,12 @@ pipeline {
                 docker {
                     image 'aquasec/trivy:latest'
                     reuseNode true
-                    args '--entrypoint="" -u root --network host -v /opt/trivy/cache:/root/.cache/trivy'
+                    args '--entrypoint="" -u root --network host'
                 }
             }
             steps {
                 sh '''trivy fs \
+                    --server http://127.0.0.1:4954 \
                     --exit-code 1 \
                     --severity HIGH,CRITICAL \
                     --scanners vuln,secret \
