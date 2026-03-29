@@ -21,7 +21,7 @@ Volume=/opt/curator/cache:/cache:Z
 
 [Service]
 Restart=always
-TimeoutStartSec=30
+TimeoutStartSec=180
 
 [Install]
 WantedBy=default.target
