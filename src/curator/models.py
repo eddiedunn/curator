@@ -134,3 +134,24 @@ class HealthResponse(BaseModel):
     uptime_seconds: float
     database_connected: bool
     daemon_running: bool
+
+
+class VisualContextRequest(BaseModel):
+    """Request for on-demand visual context from a YouTube video frame."""
+    video_id: str = Field(..., description="YouTube video ID")
+    timestamp_sec: float = Field(..., description="Timestamp in seconds to extract frame from")
+
+
+class VisualContextResponse(BaseModel):
+    """Response with VLM-generated visual context for a video frame."""
+    video_id: str
+    timestamp_sec: float
+    caption: str = ""
+    ocr_text: str = ""
+    entity_types: List[str] = Field(default_factory=list)
+    frame_path: Optional[str] = None
+    latency_ms: int = 0
+    frame_latency_ms: int = 0
+    vlm_latency_ms: Optional[int] = None
+    vlm_available: bool = False
+    error: Optional[str] = None

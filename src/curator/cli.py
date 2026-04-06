@@ -233,6 +233,62 @@ def items(limit):
     console.print(table)
 
 
+@main.command("visual-context")
+@click.argument("video_id")
+@click.argument("timestamp", type=float)
+@click.option("--prewarm", is_flag=True, help="Pre-warm VLM model before querying")
+def visual_context(video_id, timestamp, prewarm):
+    """Get visual context for a YouTube video frame (via glimpse service)."""
+    import httpx
+
+    settings = get_settings()
+    glimpse_url = settings.glimpse_service_url
+
+    async def _run():
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10.0, read=330.0, write=10.0, pool=10.0)
+        ) as client:
+            if prewarm:
+                console.print("[dim]Pre-warming VLM model...[/dim]")
+                await client.post(f"{glimpse_url}/v1/prewarm")
+
+            console.print(f"[bold]Extracting visual context:[/bold] {video_id} @ {timestamp}s")
+            r = await client.post(
+                f"{glimpse_url}/v1/glimpse",
+                json={"video_id": video_id, "timestamp_sec": timestamp},
+            )
+            r.raise_for_status()
+            return r.json()
+
+    try:
+        result = asyncio.run(_run())
+    except httpx.ConnectError:
+        console.print("[red]Error: Glimpse service unavailable[/red]")
+        raise SystemExit(1)
+
+    # Display results
+    if result.get("error"):
+        console.print(f"[red]Error: {result['error']}[/red]")
+
+    if result.get("caption") or result.get("ocr_text"):
+        console.print(f"\n[bold green]Caption:[/bold green] {result.get('caption', '')}")
+        if result.get("ocr_text"):
+            console.print(f"\n[bold blue]OCR Text:[/bold blue]\n{result['ocr_text']}")
+        if result.get("entity_types"):
+            console.print(f"\n[bold yellow]Entity Types:[/bold yellow] {', '.join(result['entity_types'])}")
+    elif not result.get("vlm_available"):
+        console.print("[yellow]No VLM backend available. Frame saved for manual inspection.[/yellow]")
+        if result.get("frame_path"):
+            console.print(f"[dim]Frame: {result['frame_path']}[/dim]")
+
+    # Latency breakdown
+    lat_parts = [f"Frame: {result['frame_latency_ms']}ms"]
+    if result.get("vlm_latency_ms") is not None:
+        lat_parts.append(f"VLM: {result['vlm_latency_ms']}ms")
+    lat_parts.append(f"Total: {result['latency_ms']}ms")
+    console.print(f"\n[dim]{' | '.join(lat_parts)}[/dim]")
+
+
 @main.command()
 def daemon():
     """Run the subscription monitoring daemon."""

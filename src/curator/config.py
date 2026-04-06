@@ -16,6 +16,7 @@ class CuratorSettings(BaseSettings):
     engram_api_url: str = "http://localhost:8800"
     engram_api_key: str | None = None
     transcribe_service_url: str = "http://localhost:8720"
+    glimpse_service_url: str = "http://localhost:8730"
 
     # Daemon
     daemon_enabled: bool = False

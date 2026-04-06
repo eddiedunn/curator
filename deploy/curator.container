@@ -1,6 +1,6 @@
 [Unit]
 Description=Curator Service
-After=network-online.target engram.service diarized-transcriber.service
+After=network-online.target engram.service diarized-transcriber.service glimpse.service
 
 [Container]
 Image=registry.starbluesolutions.net/curator:latest
@@ -14,6 +14,7 @@ PublishPort=127.0.0.1:8950:8950
 Environment=CURATOR_ENGRAM_API_URL=http://engram:8800
 Environment=CURATOR_TRANSCRIBE_SERVICE_URL=http://diarized-transcriber:8000
 Environment=CURATOR_DATABASE_URL=sqlite:////data/curator.db
+Environment=CURATOR_GLIMPSE_SERVICE_URL=http://glimpse:8730
 Environment=CURATOR_DAEMON_ENABLED=true
 
 Volume=/opt/curator/data:/data:Z

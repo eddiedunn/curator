@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Security, Depends
 from fastapi.security import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
+import httpx
 import structlog
 
 from curator.config import get_settings
@@ -22,6 +23,8 @@ from curator.models import (
     HealthResponse,
     StatusResponse,
     IngestionStatus,
+    VisualContextRequest,
+    VisualContextResponse,
 )
 from curator.orchestrator import IngestionOrchestrator
 
@@ -417,6 +420,45 @@ async def get_ingested_item(
         raise HTTPException(status_code=404, detail="Item not found")
 
     return IngestedItemResponse(**item_data)
+
+
+# Visual context endpoint
+
+@app.post("/api/v1/visual-context", response_model=VisualContextResponse)
+async def visual_context(
+    request: VisualContextRequest,
+    subscription_id: Optional[int] = None,
+    api_key: Optional[str] = Depends(verify_api_key),
+):
+    """Proxy visual context request to the glimpse service."""
+    # Gate on subscription flag if subscription_id provided
+    if subscription_id is not None:
+        storage = get_storage()
+        sub = storage.get_subscription(subscription_id)
+        if not sub:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        metadata = sub.get("metadata", {})
+        if not metadata.get("visual_context_enabled"):
+            raise HTTPException(
+                status_code=403,
+                detail="Visual context not enabled for this subscription",
+            )
+
+    settings = get_settings()
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=10.0, read=330.0, write=10.0, pool=10.0)
+    ) as client:
+        try:
+            r = await client.post(
+                f"{settings.glimpse_service_url}/v1/glimpse",
+                json={"video_id": request.video_id, "timestamp_sec": request.timestamp_sec},
+            )
+            r.raise_for_status()
+            return VisualContextResponse(**r.json())
+        except httpx.ConnectError:
+            raise HTTPException(status_code=503, detail="Glimpse service unavailable")
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text)
 
 
 # Root endpoint
