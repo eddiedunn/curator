@@ -67,7 +67,7 @@ def _make_item(item_id=1, source_id="abc123", attempts=0):
 def _make_engram_response(duration=300.0, segments=None):
     segs = segments or [{"start": 42.0}, {"start": 120.0}]
     return {
-        "content_id": "youtube-abc123",
+        "content_id": "abc123",
         "metadata": {
             "duration_seconds": duration,
             "segments": segs,
@@ -138,7 +138,7 @@ async def test_enrich_full_cycle(daemon, storage):
             # PATCH issued to engram
             mock_client.patch.assert_called_once()
             patch_url = mock_client.patch.call_args.args[0]
-            assert "youtube-abc123" in patch_url
+            assert "abc123" in patch_url
             patch_body = mock_client.patch.call_args.kwargs["json"]
             assert "visual_context" in patch_body["metadata"]
             assert patch_body["metadata"]["visual_context"]["frame_count"] == 1

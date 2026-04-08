@@ -383,7 +383,7 @@ class SubscriptionDaemon:
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     engram_url = self.settings.engram_api_url
                     r = await client.get(
-                        f"{engram_url}/api/v1/content/youtube-{source_id}"
+                        f"{engram_url}/api/v1/content/{source_id}"
                     )
                     if r.status_code == 404:
                         log.warning("engram_content_not_found")
@@ -442,7 +442,7 @@ class SubscriptionDaemon:
 
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     r = await client.patch(
-                        f"{self.settings.engram_api_url}/api/v1/content/youtube-{source_id}",
+                        f"{self.settings.engram_api_url}/api/v1/content/{source_id}",
                         json={"metadata": patch_payload},
                     )
                     r.raise_for_status()
