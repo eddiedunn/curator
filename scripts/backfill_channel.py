@@ -85,19 +85,23 @@ class ChannelBackfiller:
             logger.error("Error fetching channel videos", error=str(e))
             return []
 
-    async def queue_fetch_job(self, video_url: str) -> Dict[str, Any]:
+    async def queue_fetch_job(self, video_url: str, subscription_id: int = None) -> Dict[str, Any]:
         """Queue a fetch job for a single video.
 
         Args:
             video_url: YouTube video URL
+            subscription_id: Optional subscription ID to link the ingested item
 
         Returns:
             Fetch job response dict
         """
+        payload = {"source_url": video_url}
+        if subscription_id is not None:
+            payload["subscription_id"] = subscription_id
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 f"{self.curator_api_url}/api/v1/fetch",
-                json={"source_url": video_url}
+                json=payload
             )
             response.raise_for_status()
             return response.json()
@@ -123,7 +127,8 @@ class ChannelBackfiller:
         channel_url: str,
         limit: int = None,
         batch_size: int = 5,
-        wait_for_completion: bool = False
+        wait_for_completion: bool = False,
+        subscription_id: int = None,
     ) -> Dict[str, Any]:
         """Backfill all videos from a channel.
 
@@ -164,7 +169,7 @@ class ChannelBackfiller:
 
             # Queue jobs concurrently within batch
             tasks = [
-                self.queue_fetch_job(video['url'])
+                self.queue_fetch_job(video['url'], subscription_id=subscription_id)
                 for video in batch
             ]
 
@@ -303,6 +308,12 @@ async def main():
         default="http://localhost:8950",
         help="Curator API URL (default: http://localhost:8950)"
     )
+    parser.add_argument(
+        "--subscription-id",
+        type=int,
+        default=None,
+        help="Subscription ID to link backfilled items (required for visual context enrichment)"
+    )
 
     args = parser.parse_args()
 
@@ -322,7 +333,8 @@ async def main():
             channel_url=args.channel_url,
             limit=args.limit,
             batch_size=args.batch_size,
-            wait_for_completion=args.wait
+            wait_for_completion=args.wait,
+            subscription_id=args.subscription_id,
         )
 
         logger.info("Backfill complete", **summary)
