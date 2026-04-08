@@ -91,6 +91,7 @@ def list_subscriptions():
     table.add_column("URL", style="white")
     table.add_column("Status", style="yellow")
     table.add_column("Enabled", style="magenta")
+    table.add_column("Visual Ctx", style="dim")
 
     for sub in subscriptions:
         table.add_row(
@@ -100,6 +101,7 @@ def list_subscriptions():
             sub["source_url"][:50] + "..." if len(sub["source_url"]) > 50 else sub["source_url"],
             sub["status"],
             "✓" if sub["enabled"] else "✗",
+            "✓" if sub.get("visual_context_enabled") else "✗",
         )
 
     console.print(table)
@@ -110,7 +112,8 @@ def list_subscriptions():
 @click.argument("url")
 @click.option("--type", "sub_type", type=click.Choice(["youtube_channel", "rss_feed", "podcast"]), default="youtube_channel")
 @click.option("--frequency", type=int, default=60, help="Check frequency in minutes")
-def add_subscription(name, url, sub_type, frequency):
+@click.option("--visual-context/--no-visual-context", default=False, help="Enable VLM visual context enrichment")
+def add_subscription(name, url, sub_type, frequency, visual_context):
     """Add a new subscription."""
     storage = CuratorStorage()
 
@@ -120,6 +123,7 @@ def add_subscription(name, url, sub_type, frequency):
             subscription_type=SubscriptionType(sub_type),
             source_url=url,
             check_frequency_minutes=frequency,
+            visual_context_enabled=visual_context,
         )
 
         console.print(f"[bold green]✓ Subscription created with ID: {sub_id}[/bold green]")
@@ -134,7 +138,8 @@ def add_subscription(name, url, sub_type, frequency):
 @click.argument("url")
 @click.option("--name", help="Subscription name (defaults to URL)")
 @click.option("--frequency", type=int, default=60, help="Check frequency in minutes")
-def subscribe(sub_type, url, name, frequency):
+@click.option("--visual-context/--no-visual-context", default=False, help="Enable VLM visual context enrichment")
+def subscribe(sub_type, url, name, frequency, visual_context):
     """Add a new subscription (shorthand for subscription add)."""
     storage = CuratorStorage()
 
@@ -147,6 +152,7 @@ def subscribe(sub_type, url, name, frequency):
             subscription_type=SubscriptionType(sub_type),
             source_url=url,
             check_frequency_minutes=frequency,
+            visual_context_enabled=visual_context,
         )
 
         console.print(f"[bold green]✓ Subscription created with ID: {sub_id}[/bold green]")
@@ -196,6 +202,36 @@ def disable_subscription(subscription_id):
 
     if success:
         console.print(f"[bold green]✓ Subscription {subscription_id} disabled[/bold green]")
+    else:
+        console.print(f"[bold red]✗ Subscription {subscription_id} not found[/bold red]")
+        exit(1)
+
+
+@subscription.command("enable-visual-context")
+@click.argument("subscription_id", type=int)
+def enable_visual_context(subscription_id):
+    """Enable VLM visual context enrichment for a subscription."""
+    storage = CuratorStorage()
+
+    success = storage.update_subscription(subscription_id, visual_context_enabled=True)
+
+    if success:
+        console.print(f"[bold green]✓ Visual context enabled for subscription {subscription_id}[/bold green]")
+    else:
+        console.print(f"[bold red]✗ Subscription {subscription_id} not found[/bold red]")
+        exit(1)
+
+
+@subscription.command("disable-visual-context")
+@click.argument("subscription_id", type=int)
+def disable_visual_context(subscription_id):
+    """Disable VLM visual context enrichment for a subscription."""
+    storage = CuratorStorage()
+
+    success = storage.update_subscription(subscription_id, visual_context_enabled=False)
+
+    if success:
+        console.print(f"[bold green]✓ Visual context disabled for subscription {subscription_id}[/bold green]")
     else:
         console.print(f"[bold red]✗ Subscription {subscription_id} not found[/bold red]")
         exit(1)
