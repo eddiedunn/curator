@@ -22,6 +22,17 @@ class CuratorSettings(BaseSettings):
     daemon_enabled: bool = False
     check_interval: int = 3600  # seconds
 
+    # Glimpse visual context enrichment
+    glimpse_timeout_seconds: float = 60.0
+    glimpse_select_timeout_seconds: float = 180.0
+    glimpse_max_frames: int = 5
+    glimpse_scene_threshold: float = 0.3
+    glimpse_proximity_seconds: float = 5.0
+    glimpse_frame_interval_seconds: int = 60
+    glimpse_max_attempts: int = 3
+    visual_context_enrich_interval_seconds: int = 300
+    visual_context_batch_size: int = 10
+
     # API server
     api_host: str = "0.0.0.0"
     api_port: int = 8950

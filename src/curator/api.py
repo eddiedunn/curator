@@ -219,6 +219,7 @@ async def create_subscription(
             check_frequency_minutes=subscription.check_frequency_minutes,
             enabled=subscription.enabled,
             metadata=subscription.metadata,
+            visual_context_enabled=subscription.visual_context_enabled,
         )
 
         # Fetch and return the created subscription
@@ -437,8 +438,7 @@ async def visual_context(
         sub = storage.get_subscription(subscription_id)
         if not sub:
             raise HTTPException(status_code=404, detail="Subscription not found")
-        metadata = sub.get("metadata", {})
-        if not metadata.get("visual_context_enabled"):
+        if not sub.get("visual_context_enabled"):
             raise HTTPException(
                 status_code=403,
                 detail="Visual context not enabled for this subscription",

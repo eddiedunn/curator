@@ -37,6 +37,7 @@ class SubscriptionCreate(BaseModel):
     check_frequency_minutes: int = Field(60, description="How often to check for new content (minutes)")
     enabled: bool = Field(True, description="Whether subscription is enabled")
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional metadata")
+    visual_context_enabled: bool = Field(False, description="Enable background VLM visual context enrichment")
 
 
 class SubscriptionResponse(BaseModel):
@@ -53,6 +54,7 @@ class SubscriptionResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    visual_context_enabled: bool = False
 
 
 class IngestedItemResponse(BaseModel):
@@ -80,6 +82,7 @@ class SubscriptionUpdate(BaseModel):
     check_frequency_minutes: Optional[int] = Field(None, description="How often to check for new content (minutes)")
     enabled: Optional[bool] = Field(None, description="Whether subscription is enabled")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
+    visual_context_enabled: Optional[bool] = Field(None, description="Enable background VLM visual context enrichment")
 
 
 class FetchJobRequest(BaseModel):

@@ -51,7 +51,8 @@ class CuratorStorage:
                     last_error TEXT,
                     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    metadata TEXT DEFAULT '{}'
+                    metadata TEXT DEFAULT '{}',
+                    visual_context_enabled BOOLEAN NOT NULL DEFAULT 0
                 )
             """)
 
@@ -71,6 +72,8 @@ class CuratorStorage:
                     status TEXT NOT NULL DEFAULT 'pending',
                     error_message TEXT,
                     metadata TEXT DEFAULT '{}',
+                    visual_context_status TEXT,
+                    visual_context_attempts INTEGER NOT NULL DEFAULT 0,
                     FOREIGN KEY (subscription_id) REFERENCES subscriptions(id) ON DELETE SET NULL,
                     UNIQUE(source_type, source_id)
                 )
@@ -110,17 +113,44 @@ class CuratorStorage:
                 ON ingested_items(subscription_id)
             """)
 
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_items_visual_ctx
+                ON ingested_items(visual_context_status, status)
+            """)
+
             conn.commit()
 
     def _migrate_schema(self, cursor):
         """Apply schema migrations for existing databases."""
-        # Check if content_id column exists in fetch_jobs
+        # fetch_jobs: content_id column
         cursor.execute("PRAGMA table_info(fetch_jobs)")
         columns = {row[1] for row in cursor.fetchall()}
-
         if 'content_id' not in columns:
             logger.info("Adding content_id column to fetch_jobs table")
             cursor.execute("ALTER TABLE fetch_jobs ADD COLUMN content_id TEXT")
+
+        # subscriptions: visual_context_enabled column
+        cursor.execute("PRAGMA table_info(subscriptions)")
+        sub_cols = {row[1] for row in cursor.fetchall()}
+        if 'visual_context_enabled' not in sub_cols:
+            logger.info("Adding visual_context_enabled column to subscriptions table")
+            cursor.execute(
+                "ALTER TABLE subscriptions ADD COLUMN "
+                "visual_context_enabled BOOLEAN NOT NULL DEFAULT 0"
+            )
+
+        # ingested_items: visual_context columns
+        cursor.execute("PRAGMA table_info(ingested_items)")
+        item_cols = {row[1] for row in cursor.fetchall()}
+        if 'visual_context_status' not in item_cols:
+            logger.info("Adding visual_context_status column to ingested_items table")
+            cursor.execute("ALTER TABLE ingested_items ADD COLUMN visual_context_status TEXT")
+        if 'visual_context_attempts' not in item_cols:
+            logger.info("Adding visual_context_attempts column to ingested_items table")
+            cursor.execute(
+                "ALTER TABLE ingested_items ADD COLUMN "
+                "visual_context_attempts INTEGER NOT NULL DEFAULT 0"
+            )
 
     @contextmanager
     def _get_connection(self):
@@ -142,14 +172,16 @@ class CuratorStorage:
         check_frequency_minutes: int = 60,
         enabled: bool = True,
         metadata: Optional[Dict[str, Any]] = None,
+        visual_context_enabled: bool = False,
     ) -> int:
         """Create a new subscription."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO subscriptions
-                (name, subscription_type, source_url, check_frequency_minutes, enabled, metadata)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (name, subscription_type, source_url, check_frequency_minutes, enabled, metadata,
+                 visual_context_enabled)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 name,
                 subscription_type.value,
@@ -157,6 +189,7 @@ class CuratorStorage:
                 check_frequency_minutes,
                 enabled,
                 json.dumps(metadata or {}),
+                visual_context_enabled,
             ))
             conn.commit()
             return cursor.lastrowid
@@ -434,6 +467,53 @@ class CuratorStorage:
             """, values)
             conn.commit()
             return cursor.rowcount > 0
+
+    # Visual context methods
+
+    def get_items_pending_visual_context(
+        self, max_attempts: int, limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Return completed YouTube items eligible for visual context enrichment."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT i.*
+                FROM ingested_items i
+                JOIN subscriptions s ON s.id = i.subscription_id
+                WHERE s.visual_context_enabled = 1
+                  AND i.source_type = 'youtube'
+                  AND i.status = 'completed'
+                  AND (
+                    i.visual_context_status IS NULL
+                    OR (i.visual_context_status = 'failed' AND i.visual_context_attempts < ?)
+                  )
+                ORDER BY i.ingested_at ASC
+                LIMIT ?
+            """, (max_attempts, limit))
+            return [self._row_to_dict(row) for row in cursor.fetchall()]
+
+    def update_visual_context_status(
+        self, item_id: int, status: str, attempts: int
+    ) -> bool:
+        """Update visual_context_status and visual_context_attempts for an item."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE ingested_items
+                SET visual_context_status = ?, visual_context_attempts = ?
+                WHERE id = ?
+            """, (status, attempts, item_id))
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def _reset_stuck_visual_context_items(self) -> None:
+        """Reset any items left in 'processing' state (e.g. from a crashed daemon)."""
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE ingested_items SET visual_context_status = NULL "
+                "WHERE visual_context_status = 'processing'"
+            )
+            conn.commit()
 
     # Utility methods
 

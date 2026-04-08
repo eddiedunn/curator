@@ -30,6 +30,8 @@ class SubscriptionDaemon:
         self.running = False
         self._lock_file = None
         self._task: asyncio.Task | None = None
+        # Reset any items stuck in 'processing' from a previous crashed run
+        self.storage._reset_stuck_visual_context_items()
 
     def _acquire_lock(self):
         """Acquire file lock to ensure single instance."""
@@ -60,12 +62,21 @@ class SubscriptionDaemon:
             replace_existing=True,
         )
 
+        self.scheduler.add_job(
+            self._enrich_visual_context,
+            trigger=IntervalTrigger(seconds=self.settings.visual_context_enrich_interval_seconds),
+            id="enrich_visual_context",
+            name="Enrich completed items with visual context",
+            replace_existing=True,
+        )
+
         self.scheduler.start()
         self.running = True
 
         logger.info(
             "Daemon started",
             check_interval_seconds=self.settings.check_interval,
+            enrich_interval_seconds=self.settings.visual_context_enrich_interval_seconds,
         )
 
     async def stop(self):
@@ -99,9 +110,18 @@ class SubscriptionDaemon:
             replace_existing=True,
         )
 
+        self.scheduler.add_job(
+            self._enrich_visual_context,
+            trigger=IntervalTrigger(seconds=self.settings.visual_context_enrich_interval_seconds),
+            id="enrich_visual_context",
+            name="Enrich completed items with visual context",
+            replace_existing=True,
+        )
+
         logger.info(
             "Daemon configured",
             check_interval_seconds=self.settings.check_interval,
+            enrich_interval_seconds=self.settings.visual_context_enrich_interval_seconds,
         )
 
         # Start scheduler and event loop
@@ -326,3 +346,111 @@ class SubscriptionDaemon:
             new_videos=new_videos,
             skipped_videos=len(video_ids) - new_videos,
         )
+
+    async def _enrich_visual_context(self):
+        """Background job: enrich completed YouTube items with VLM visual context."""
+        import httpx
+        from curator import glimpse_client
+
+        logger.debug("Running visual context enrichment job")
+
+        try:
+            items = self.storage.get_items_pending_visual_context(
+                max_attempts=self.settings.glimpse_max_attempts,
+                limit=self.settings.visual_context_batch_size,
+            )
+        except Exception as exc:
+            logger.error("Failed to fetch visual context queue", error=str(exc))
+            return
+
+        if not items:
+            logger.debug("No items pending visual context enrichment")
+            return
+
+        logger.info("Visual context enrichment starting", count=len(items))
+
+        for item in items:
+            item_id = item["id"]
+            source_id = item["source_id"]  # YouTube video ID
+            attempts = item.get("visual_context_attempts", 0) + 1
+
+            self.storage.update_visual_context_status(item_id, "processing", attempts)
+
+            log = logger.bind(item_id=item_id, video_id=source_id, attempt=attempts)
+
+            try:
+                # Fetch the Engram record to get duration + transcript segments
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    engram_url = self.settings.engram_api_url
+                    r = await client.get(
+                        f"{engram_url}/api/v1/content/youtube-{source_id}"
+                    )
+                    if r.status_code == 404:
+                        log.warning("engram_content_not_found")
+                        self.storage.update_visual_context_status(item_id, "failed", attempts)
+                        continue
+                    r.raise_for_status()
+                    engram_data = r.json()
+
+                metadata = engram_data.get("metadata") or {}
+                duration = float(metadata.get("duration_seconds", 0))
+                segments = metadata.get("segments") or []
+                segment_starts = [float(s["start"]) for s in segments if "start" in s]
+
+                # Select frames via Glimpse
+                selected = await glimpse_client.select_frames(
+                    video_id=source_id,
+                    duration_seconds=duration,
+                    segment_timestamps=segment_starts,
+                    glimpse_url=self.settings.glimpse_service_url,
+                    max_frames=self.settings.glimpse_max_frames,
+                    scene_threshold=self.settings.glimpse_scene_threshold,
+                    proximity_seconds=self.settings.glimpse_proximity_seconds,
+                    timeout_seconds=self.settings.glimpse_select_timeout_seconds,
+                    fallback_interval_seconds=self.settings.glimpse_frame_interval_seconds,
+                )
+
+                if not selected:
+                    log.info("no_frames_selected_skipping")
+                    self.storage.update_visual_context_status(item_id, "complete", attempts)
+                    continue
+
+                # Collect captions / OCR for each selected frame
+                frames = await glimpse_client.collect_visual_context(
+                    video_id=source_id,
+                    selected=selected,
+                    glimpse_url=self.settings.glimpse_service_url,
+                    timeout_seconds=self.settings.glimpse_timeout_seconds,
+                )
+
+                # PATCH Engram metadata
+                from datetime import timezone
+                now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                patch_payload = {
+                    "visual_context_generated_at": now_iso,
+                    "visual_context": {
+                        "model": "glimpse",
+                        "frame_count": len(frames),
+                        "selection": {
+                            "strategy": "segment+scene_change",
+                            "scene_threshold": self.settings.glimpse_scene_threshold,
+                            "proximity_seconds": self.settings.glimpse_proximity_seconds,
+                        },
+                        "frames": frames,
+                    },
+                }
+
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    r = await client.patch(
+                        f"{self.settings.engram_api_url}/api/v1/content/youtube-{source_id}",
+                        json={"metadata": patch_payload},
+                    )
+                    r.raise_for_status()
+
+                self.storage.update_visual_context_status(item_id, "complete", attempts)
+                log.info("visual_context_enrichment_complete", frame_count=len(frames))
+
+            except Exception as exc:
+                log.error("visual_context_enrichment_failed", error=str(exc))
+                status = "failed" if attempts >= self.settings.glimpse_max_attempts else "failed"
+                self.storage.update_visual_context_status(item_id, status, attempts)

@@ -109,10 +109,12 @@ def test_daemon_scheduler_configuration(daemon, settings):
                             except (KeyboardInterrupt, SystemExit):
                                 pass
 
-                            # Check that scheduler job was added
+                            # Check that both scheduler jobs were added
                             jobs = daemon.scheduler.get_jobs()
-                            assert len(jobs) == 1
-                            assert jobs[0].id == "check_subscriptions"
+                            assert len(jobs) == 2
+                            job_ids = {j.id for j in jobs}
+                            assert "check_subscriptions" in job_ids
+                            assert "enrich_visual_context" in job_ids
 
 
 @pytest.mark.asyncio
