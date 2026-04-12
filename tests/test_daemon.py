@@ -178,7 +178,7 @@ async def test_process_subscription_existing_content(daemon):
     mock_plugin.fetch_metadata = AsyncMock(return_value=mock_metadata)
     mock_plugin.source_type = "youtube"
 
-    existing_item = {"id": 1, "source_id": "test123"}
+    existing_item = {"id": 1, "source_id": "test123", "status": "completed"}
 
     with patch.object(daemon.orchestrator, '_get_plugin_for_url', return_value=mock_plugin):
         with patch.object(daemon.storage, 'get_ingested_item_by_source', return_value=existing_item):
@@ -186,7 +186,7 @@ async def test_process_subscription_existing_content(daemon):
                 with patch.object(daemon.orchestrator, 'ingest_url') as mock_ingest:
                     await daemon._process_subscription(subscription)
 
-                    # Should not trigger ingestion for existing content
+                    # Should not trigger ingestion for already-completed content
                     mock_ingest.assert_not_called()
 
 

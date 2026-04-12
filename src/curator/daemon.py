@@ -238,7 +238,7 @@ class SubscriptionDaemon:
                     metadata.content_id,
                 )
 
-                if existing_item:
+                if existing_item and existing_item.get("status") == "completed":
                     logger.debug(
                         "Content already ingested",
                         subscription_id=sub_id,
@@ -307,7 +307,7 @@ class SubscriptionDaemon:
                 video_id,
             )
 
-            if existing_item:
+            if existing_item and existing_item.get("status") == "completed":
                 logger.debug(
                     "Video already ingested, skipping",
                     subscription_id=sub_id,

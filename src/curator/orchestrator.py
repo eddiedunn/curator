@@ -14,6 +14,11 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 
+class ServiceBusyError(Exception):
+    """Raised when the transcription service returns 503 (temporarily unavailable)."""
+    pass
+
+
 def _format_diarized_text(segments: list[dict]) -> str:
     """Format transcription segments into speaker-labeled paragraphs.
 
@@ -100,16 +105,18 @@ class IngestionOrchestrator:
 
             logger.info("Starting ingestion", url=url, plugin=plugin.source_type)
 
-            # Call the main ingest method (returns metadata and content_id)
-            metadata, content_id = await self.ingest(url, plugin)
+            # Fetch metadata early so we can persist a record before the long ingest
+            metadata = await plugin.fetch_metadata(url)
+            if not metadata:
+                raise ValueError(f"Failed to fetch metadata for {url}")
 
-            # Normalize source_type to lowercase before storing
             source_type = plugin.source_type.lower()
 
-            # Create ingested_item record with full metadata (always create, subscription is optional)
+            # Create a pending record immediately so failures are tracked and not
+            # silently rediscovered on every hourly scan.
             item_id = self.storage.create_ingested_item(
                 source_type=source_type,
-                source_id=content_id,
+                source_id=metadata.content_id,
                 source_url=url,
                 title=metadata.title,
                 author=metadata.author,
@@ -117,8 +124,18 @@ class IngestionOrchestrator:
                 subscription_id=subscription_id,
                 metadata={"duration_seconds": metadata.duration_seconds}
             )
+            # When a record already exists (IntegrityError → None), look it up so
+            # we can still update its status on success or failure.
+            if item_id is None:
+                existing = self.storage.get_ingested_item_by_source(source_type, metadata.content_id)
+                if existing:
+                    item_id = existing["id"]
 
-            # Update ingested item status to completed (item_id is None if duplicate — already completed)
+            # Call the main ingest method, passing pre-fetched metadata to avoid
+            # a redundant fetch_metadata call inside ingest().
+            _, content_id = await self.ingest(url, plugin, prefetched_metadata=metadata)
+
+            # Update ingested item status to completed
             if item_id is not None:
                 self.storage.update_ingested_item(item_id, status="completed")
 
@@ -132,6 +149,27 @@ class IngestionOrchestrator:
 
             logger.info("Ingestion completed", content_id=content_id, url=url)
             return True
+
+        except ServiceBusyError as e:
+            error_msg = str(e)
+            logger.warning("Transcription service busy, will retry next scan", error=error_msg, url=url)
+
+            # Leave item as pending so it is retried on the next scan
+            if item_id is not None:
+                self.storage.update_ingested_item(
+                    item_id,
+                    status="pending",
+                    error_message=error_msg
+                )
+
+            if job_id:
+                self.storage.update_fetch_job(
+                    job_id,
+                    status="failed",
+                    error_message=error_msg
+                )
+
+            return False
 
         except Exception as e:
             error_msg = str(e)
@@ -175,15 +213,23 @@ class IngestionOrchestrator:
 
         return None
 
-    async def ingest(self, url: str, plugin: IngestionPlugin) -> tuple[ContentMetadata, str]:
+    async def ingest(
+        self,
+        url: str,
+        plugin: IngestionPlugin,
+        prefetched_metadata: Optional[ContentMetadata] = None,
+    ) -> tuple[ContentMetadata, str]:
         """Ingest content from URL using plugin.
 
         Returns (metadata, content_id) on success.
         """
-        # 1. Fetch metadata
-        metadata = await plugin.fetch_metadata(url)
-        if not metadata:
-            raise ValueError(f"Failed to fetch metadata for {url}")
+        # 1. Fetch metadata (skip if already fetched by caller)
+        if prefetched_metadata is not None:
+            metadata = prefetched_metadata
+        else:
+            metadata = await plugin.fetch_metadata(url)
+            if not metadata:
+                raise ValueError(f"Failed to fetch metadata for {url}")
 
         # 2. Check duplicate in Engram
         async with httpx.AsyncClient(base_url=self._engram_url) as client:
@@ -244,5 +290,8 @@ class IngestionOrchestrator:
                     files={"audio": (audio_path.name, f)},
                     data={"cleanup": "true", "include_embeddings": "true", "identify_speakers": "true", "auto_enroll_speakers": "false"}
                 )
+            if response.status_code == 503:
+                retry_after = int(response.headers.get("Retry-After", "60"))
+                raise ServiceBusyError(f"Transcription service busy, retry after {retry_after}s")
             response.raise_for_status()
             return response.json()
