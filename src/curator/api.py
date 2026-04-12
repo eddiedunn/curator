@@ -461,6 +461,26 @@ async def visual_context(
             raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text)
 
 
+@app.post("/api/v1/visual-context/reset")
+async def reset_visual_context(
+    subscription_id: Optional[int] = None,
+    all_failed: bool = False,
+    api_key: Optional[str] = Depends(verify_api_key),
+):
+    """Reset failed visual context items so they re-enter the enrichment queue."""
+    if not all_failed and subscription_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Must specify subscription_id or all_failed=true",
+        )
+    storage = get_storage()
+    count = storage.reset_visual_context_items(
+        subscription_id=subscription_id,
+        all_failed=all_failed,
+    )
+    return {"reset_count": count}
+
+
 # Root endpoint
 @app.get("/")
 async def root():

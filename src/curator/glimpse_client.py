@@ -24,7 +24,7 @@ def _naive_interval_timestamps(
     out: list[SelectedFrame] = []
     t = start
     while t <= end and len(out) < max_frames:
-        out.append(SelectedFrame(timestamp_sec=t, score=1, signals=["interval_fallback"]))
+        out.append(SelectedFrame(timestamp_sec=t, score=0, signals=["interval_fallback"]))
         t += interval_seconds
     return out
 
@@ -55,8 +55,19 @@ async def select_frames(
             r = await client.post(f"{glimpse_url}/v1/select-frames", json=payload)
             r.raise_for_status()
             data = r.json()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            logger.error("glimpse_endpoint_missing", video_id=video_id,
+                         hint="Glimpse /v1/select-frames not found — deploy update required")
+        else:
+            logger.warning("glimpse_select_frames_http_error", video_id=video_id,
+                           status=exc.response.status_code)
+        return _naive_interval_timestamps(duration_seconds, fallback_interval_seconds, max_frames)
+    except (httpx.ConnectError, httpx.TimeoutException) as exc:
+        logger.warning("glimpse_select_frames_network_error", video_id=video_id, error=str(exc))
+        return _naive_interval_timestamps(duration_seconds, fallback_interval_seconds, max_frames)
     except Exception as exc:
-        logger.warning("glimpse_select_frames_failed", video_id=video_id, error=str(exc))
+        logger.warning("glimpse_select_frames_unexpected", video_id=video_id, error=str(exc))
         return _naive_interval_timestamps(duration_seconds, fallback_interval_seconds, max_frames)
 
     if data.get("error") and not data.get("selected_timestamps"):

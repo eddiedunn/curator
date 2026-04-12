@@ -515,6 +515,33 @@ class CuratorStorage:
             )
             conn.commit()
 
+    def reset_visual_context_items(
+        self,
+        subscription_id: int | None = None,
+        all_failed: bool = False,
+    ) -> int:
+        """Reset visual_context_status and attempts for failed items.
+
+        Returns the count of reset items.
+        """
+        if not all_failed and subscription_id is None:
+            raise ValueError("Must specify subscription_id or all_failed=True")
+
+        query = """
+            UPDATE ingested_items
+            SET visual_context_status = NULL, visual_context_attempts = 0
+            WHERE visual_context_status = 'failed'
+        """
+        params: list = []
+        if subscription_id is not None:
+            query += " AND subscription_id = ?"
+            params.append(subscription_id)
+
+        with self._get_connection() as conn:
+            cursor = conn.execute(query, params)
+            conn.commit()
+            return cursor.rowcount
+
     # Utility methods
 
     def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:

@@ -379,6 +379,19 @@ class SubscriptionDaemon:
             log = logger.bind(item_id=item_id, video_id=source_id, attempt=attempts)
 
             try:
+                # Pre-flight: verify content exists in Engram (permanent failure if not)
+                try:
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        check = await client.get(
+                            f"{self.settings.engram_api_url}/api/v1/content/{source_id}"
+                        )
+                    if check.status_code == 404:
+                        log.warning("visual_context_skipped_no_engram_content", source_id=source_id)
+                        self.storage.update_visual_context_status(item_id, "skipped", attempts - 1)
+                        continue
+                except Exception:
+                    pass  # Engram may be temporarily down; proceed and let normal error handling catch it
+
                 # Fetch the Engram record to get duration + transcript segments
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     engram_url = self.settings.engram_api_url
@@ -452,5 +465,5 @@ class SubscriptionDaemon:
 
             except Exception as exc:
                 log.error("visual_context_enrichment_failed", error=str(exc))
-                status = "failed" if attempts >= self.settings.glimpse_max_attempts else "failed"
+                status = "failed" if attempts >= self.settings.glimpse_max_attempts else "pending"
                 self.storage.update_visual_context_status(item_id, status, attempts)

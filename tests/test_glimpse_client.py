@@ -26,7 +26,7 @@ def test_naive_interval_normal_video():
     result = _naive_interval_timestamps(300.0, 60, 5)
     assert len(result) == 5
     assert all(f.signals == ["interval_fallback"] for f in result)
-    assert all(f.score == 1 for f in result)
+    assert all(f.score == 0 for f in result)
     assert result[0].timestamp_sec == pytest.approx(10.0)
 
 
