@@ -194,7 +194,7 @@ async def test_enrich_retry_cap_fails_permanently(daemon, storage):
 
 @pytest.mark.asyncio
 async def test_enrich_engram_not_found(daemon, storage):
-    """If Engram returns 404, item is marked skipped without consuming an attempt."""
+    """If Engram returns 404, item is marked failed and attempt is counted."""
     item = _make_item()
     not_found_resp = _make_http_response({}, status_code=404)
     not_found_resp.status_code = 404
@@ -211,7 +211,7 @@ async def test_enrich_engram_not_found(daemon, storage):
 
             calls = mock_status.call_args_list
             assert calls[0] == call(1, "processing", 1)
-            assert calls[1] == call(1, "skipped", 0)
+            assert calls[1] == call(1, "failed", 1)
 
 
 # ---------------------------------------------------------------------------
