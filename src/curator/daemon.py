@@ -70,6 +70,14 @@ class SubscriptionDaemon:
             replace_existing=True,
         )
 
+        self.scheduler.add_job(
+            self._purge_expired_items,
+            trigger=IntervalTrigger(hours=self.settings.purge_interval_hours),
+            id="purge_expired_items",
+            name="Purge expired ingested items",
+            replace_existing=True,
+        )
+
         self.scheduler.start()
         self.running = True
 
@@ -115,6 +123,14 @@ class SubscriptionDaemon:
             trigger=IntervalTrigger(seconds=self.settings.visual_context_enrich_interval_seconds),
             id="enrich_visual_context",
             name="Enrich completed items with visual context",
+            replace_existing=True,
+        )
+
+        self.scheduler.add_job(
+            self._purge_expired_items,
+            trigger=IntervalTrigger(hours=self.settings.purge_interval_hours),
+            id="purge_expired_items",
+            name="Purge expired ingested items",
             replace_existing=True,
         )
 
@@ -238,7 +254,7 @@ class SubscriptionDaemon:
                     metadata.content_id,
                 )
 
-                if existing_item and existing_item.get("status") == "completed":
+                if existing_item:
                     logger.debug(
                         "Content already ingested",
                         subscription_id=sub_id,
@@ -307,7 +323,7 @@ class SubscriptionDaemon:
                 video_id,
             )
 
-            if existing_item and existing_item.get("status") == "completed":
+            if existing_item:
                 logger.debug(
                     "Video already ingested, skipping",
                     subscription_id=sub_id,
@@ -347,6 +363,22 @@ class SubscriptionDaemon:
             skipped_videos=len(video_ids) - new_videos,
         )
 
+    async def _purge_expired_items(self):
+        """Scheduled job: delete expired ingested items based on configured TTLs."""
+        logger.info("Running expired item purge")
+        try:
+            deleted = self.storage.delete_expired_items(
+                failed_ttl_days=self.settings.failed_item_ttl_days,
+                pending_ttl_days=self.settings.pending_item_ttl_days,
+                completed_ttl_days=self.settings.completed_item_ttl_days,
+            )
+            if deleted:
+                logger.info("Purged expired items", counts=deleted)
+            else:
+                logger.debug("No expired items to purge")
+        except Exception as e:
+            logger.error("Error purging expired items", error=str(e))
+
     async def _enrich_visual_context(self):
         """Background job: enrich completed YouTube items with VLM visual context."""
         import httpx
@@ -379,19 +411,6 @@ class SubscriptionDaemon:
             log = logger.bind(item_id=item_id, video_id=source_id, attempt=attempts)
 
             try:
-                # Pre-flight: verify content exists in Engram (permanent failure if not)
-                try:
-                    async with httpx.AsyncClient(timeout=10.0) as client:
-                        check = await client.get(
-                            f"{self.settings.engram_api_url}/api/v1/content/{source_id}"
-                        )
-                    if check.status_code == 404:
-                        log.warning("visual_context_skipped_no_engram_content", source_id=source_id)
-                        self.storage.update_visual_context_status(item_id, "skipped", attempts - 1)
-                        continue
-                except Exception:
-                    pass  # Engram may be temporarily down; proceed and let normal error handling catch it
-
                 # Fetch the Engram record to get duration + transcript segments
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     engram_url = self.settings.engram_api_url
@@ -465,5 +484,5 @@ class SubscriptionDaemon:
 
             except Exception as exc:
                 log.error("visual_context_enrichment_failed", error=str(exc))
-                status = "failed" if attempts >= self.settings.glimpse_max_attempts else "pending"
+                status = "failed" if attempts >= self.settings.glimpse_max_attempts else "failed"
                 self.storage.update_visual_context_status(item_id, status, attempts)

@@ -515,32 +515,44 @@ class CuratorStorage:
             )
             conn.commit()
 
-    def reset_visual_context_items(
+
+    def delete_expired_items(
         self,
-        subscription_id: int | None = None,
-        all_failed: bool = False,
-    ) -> int:
-        """Reset visual_context_status and attempts for failed items.
+        failed_ttl_days: int = 0,
+        pending_ttl_days: int = 0,
+        completed_ttl_days: int = 0,
+    ) -> dict:
+        """Delete ingested items older than their configured TTL.
 
-        Returns the count of reset items.
+        Returns counts of deleted items per status.
+        Items with TTL=0 are never deleted.
+        Deleting an item removes its fetch_jobs (ON DELETE CASCADE) and allows
+        the content to be re-discovered on the next subscription check.
         """
-        if not all_failed and subscription_id is None:
-            raise ValueError("Must specify subscription_id or all_failed=True")
-
-        query = """
-            UPDATE ingested_items
-            SET visual_context_status = NULL, visual_context_attempts = 0
-            WHERE visual_context_status = 'failed'
-        """
-        params: list = []
-        if subscription_id is not None:
-            query += " AND subscription_id = ?"
-            params.append(subscription_id)
-
+        deleted = {}
+        ttls = [
+            ("failed", failed_ttl_days),
+            ("pending", pending_ttl_days),
+            ("completed", completed_ttl_days),
+        ]
         with self._get_connection() as conn:
-            cursor = conn.execute(query, params)
+            cursor = conn.cursor()
+            for status, ttl_days in ttls:
+                if ttl_days <= 0:
+                    continue
+                cursor.execute(
+                    """
+                    DELETE FROM ingested_items
+                    WHERE status = ?
+                      AND ingested_at < datetime('now', ? || ' days')
+                    """,
+                    (status, f"-{ttl_days}"),
+                )
+                count = cursor.rowcount
+                if count:
+                    deleted[status] = count
             conn.commit()
-            return cursor.rowcount
+        return deleted
 
     # Utility methods
 
