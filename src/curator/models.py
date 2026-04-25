@@ -38,6 +38,7 @@ class SubscriptionCreate(BaseModel):
     enabled: bool = Field(True, description="Whether subscription is enabled")
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional metadata")
     visual_context_enabled: bool = Field(False, description="Enable background VLM visual context enrichment")
+    content_ttl_days: Optional[int] = Field(None, description="Delete completed items older than this many days (null = never)")
 
 
 class SubscriptionResponse(BaseModel):
@@ -55,6 +56,7 @@ class SubscriptionResponse(BaseModel):
     updated_at: datetime
     metadata: Dict[str, Any] = Field(default_factory=dict)
     visual_context_enabled: bool = False
+    content_ttl_days: Optional[int] = None
 
 
 class IngestedItemResponse(BaseModel):
@@ -83,6 +85,7 @@ class SubscriptionUpdate(BaseModel):
     enabled: Optional[bool] = Field(None, description="Whether subscription is enabled")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
     visual_context_enabled: Optional[bool] = Field(None, description="Enable background VLM visual context enrichment")
+    content_ttl_days: Optional[int] = Field(None, description="Delete completed items older than this many days (null = never)")
 
 
 class FetchJobRequest(BaseModel):

@@ -33,12 +33,6 @@ class CuratorSettings(BaseSettings):
     visual_context_enrich_interval_seconds: int = 300
     visual_context_batch_size: int = 10
 
-    # Item expiration / purge
-    failed_item_ttl_days: int = 30    # delete failed items older than N days (0 = never)
-    pending_item_ttl_days: int = 0    # delete stuck pending items older than N days (0 = never)
-    completed_item_ttl_days: int = 0  # delete completed items older than N days (0 = never)
-    purge_interval_hours: int = 24    # how often the purge job runs
-
     # API server
     api_host: str = "0.0.0.0"
     api_port: int = 8950
@@ -52,6 +46,9 @@ class CuratorSettings(BaseSettings):
     # Processing
     max_concurrent_jobs: int = 3
     job_timeout: int = 3600
+
+    # Content purge
+    purge_interval_hours: int = 24
 
     # Logging
     log_level: str = "INFO"

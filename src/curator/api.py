@@ -220,6 +220,7 @@ async def create_subscription(
             enabled=subscription.enabled,
             metadata=subscription.metadata,
             visual_context_enabled=subscription.visual_context_enabled,
+            content_ttl_days=subscription.content_ttl_days,
         )
 
         # Fetch and return the created subscription

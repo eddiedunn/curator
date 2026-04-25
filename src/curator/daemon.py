@@ -71,10 +71,10 @@ class SubscriptionDaemon:
         )
 
         self.scheduler.add_job(
-            self._purge_expired_items,
+            self._purge_expired_content,
             trigger=IntervalTrigger(hours=self.settings.purge_interval_hours),
-            id="purge_expired_items",
-            name="Purge expired ingested items",
+            id="purge_expired_content",
+            name="Delete expired content per subscription TTL",
             replace_existing=True,
         )
 
@@ -85,6 +85,7 @@ class SubscriptionDaemon:
             "Daemon started",
             check_interval_seconds=self.settings.check_interval,
             enrich_interval_seconds=self.settings.visual_context_enrich_interval_seconds,
+            purge_interval_hours=self.settings.purge_interval_hours,
         )
 
     async def stop(self):
@@ -127,10 +128,10 @@ class SubscriptionDaemon:
         )
 
         self.scheduler.add_job(
-            self._purge_expired_items,
+            self._purge_expired_content,
             trigger=IntervalTrigger(hours=self.settings.purge_interval_hours),
-            id="purge_expired_items",
-            name="Purge expired ingested items",
+            id="purge_expired_content",
+            name="Delete expired content per subscription TTL",
             replace_existing=True,
         )
 
@@ -138,6 +139,7 @@ class SubscriptionDaemon:
             "Daemon configured",
             check_interval_seconds=self.settings.check_interval,
             enrich_interval_seconds=self.settings.visual_context_enrich_interval_seconds,
+            purge_interval_hours=self.settings.purge_interval_hours,
         )
 
         # Start scheduler and event loop
@@ -363,22 +365,6 @@ class SubscriptionDaemon:
             skipped_videos=len(video_ids) - new_videos,
         )
 
-    async def _purge_expired_items(self):
-        """Scheduled job: delete expired ingested items based on configured TTLs."""
-        logger.info("Running expired item purge")
-        try:
-            deleted = self.storage.delete_expired_items(
-                failed_ttl_days=self.settings.failed_item_ttl_days,
-                pending_ttl_days=self.settings.pending_item_ttl_days,
-                completed_ttl_days=self.settings.completed_item_ttl_days,
-            )
-            if deleted:
-                logger.info("Purged expired items", counts=deleted)
-            else:
-                logger.debug("No expired items to purge")
-        except Exception as e:
-            logger.error("Error purging expired items", error=str(e))
-
     async def _enrich_visual_context(self):
         """Background job: enrich completed YouTube items with VLM visual context."""
         import httpx
@@ -486,3 +472,15 @@ class SubscriptionDaemon:
                 log.error("visual_context_enrichment_failed", error=str(exc))
                 status = "failed" if attempts >= self.settings.glimpse_max_attempts else "failed"
                 self.storage.update_visual_context_status(item_id, status, attempts)
+
+    async def _purge_expired_content(self):
+        """Delete completed items that have exceeded their subscription's content_ttl_days."""
+        logger.debug("Running content expiration purge")
+        try:
+            deleted = self.storage.delete_expired_content()
+            if deleted:
+                logger.info("Purged expired content items", deleted=deleted)
+            else:
+                logger.debug("No expired content to purge")
+        except Exception as exc:
+            logger.error("Content expiration purge failed", error=str(exc))

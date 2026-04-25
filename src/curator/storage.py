@@ -139,6 +139,15 @@ class CuratorStorage:
                 "visual_context_enabled BOOLEAN NOT NULL DEFAULT 0"
             )
 
+        # subscriptions: content_ttl_days column
+        cursor.execute("PRAGMA table_info(subscriptions)")
+        sub_cols2 = {row[1] for row in cursor.fetchall()}
+        if 'content_ttl_days' not in sub_cols2:
+            logger.info("Adding content_ttl_days column to subscriptions table")
+            cursor.execute(
+                "ALTER TABLE subscriptions ADD COLUMN content_ttl_days INTEGER"
+            )
+
         # ingested_items: visual_context columns
         cursor.execute("PRAGMA table_info(ingested_items)")
         item_cols = {row[1] for row in cursor.fetchall()}
@@ -173,6 +182,7 @@ class CuratorStorage:
         enabled: bool = True,
         metadata: Optional[Dict[str, Any]] = None,
         visual_context_enabled: bool = False,
+        content_ttl_days: Optional[int] = None,
     ) -> int:
         """Create a new subscription."""
         with self._get_connection() as conn:
@@ -180,8 +190,8 @@ class CuratorStorage:
             cursor.execute("""
                 INSERT INTO subscriptions
                 (name, subscription_type, source_url, check_frequency_minutes, enabled, metadata,
-                 visual_context_enabled)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                 visual_context_enabled, content_ttl_days)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 name,
                 subscription_type.value,
@@ -190,6 +200,7 @@ class CuratorStorage:
                 enabled,
                 json.dumps(metadata or {}),
                 visual_context_enabled,
+                content_ttl_days,
             ))
             conn.commit()
             return cursor.lastrowid
@@ -428,6 +439,28 @@ class CuratorStorage:
             conn.commit()
             return cursor.rowcount > 0
 
+    def delete_expired_content(self) -> int:
+        """Delete completed ingested_items older than each subscription's content_ttl_days.
+
+        Only subscriptions with content_ttl_days IS NOT NULL are considered.
+        Returns the count of deleted rows.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM ingested_items
+                WHERE status = 'completed'
+                  AND subscription_id IN (
+                    SELECT id FROM subscriptions WHERE content_ttl_days IS NOT NULL
+                  )
+                  AND ingested_at < datetime('now', '-' || (
+                    SELECT content_ttl_days FROM subscriptions
+                    WHERE id = ingested_items.subscription_id
+                  ) || ' days')
+            """)
+            conn.commit()
+            return cursor.rowcount
+
     # Fetch job methods
 
     def create_fetch_job(self, job_id: str, source_url: str, item_id: Optional[int] = None) -> bool:
@@ -515,44 +548,6 @@ class CuratorStorage:
             )
             conn.commit()
 
-
-    def delete_expired_items(
-        self,
-        failed_ttl_days: int = 0,
-        pending_ttl_days: int = 0,
-        completed_ttl_days: int = 0,
-    ) -> dict:
-        """Delete ingested items older than their configured TTL.
-
-        Returns counts of deleted items per status.
-        Items with TTL=0 are never deleted.
-        Deleting an item removes its fetch_jobs (ON DELETE CASCADE) and allows
-        the content to be re-discovered on the next subscription check.
-        """
-        deleted = {}
-        ttls = [
-            ("failed", failed_ttl_days),
-            ("pending", pending_ttl_days),
-            ("completed", completed_ttl_days),
-        ]
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            for status, ttl_days in ttls:
-                if ttl_days <= 0:
-                    continue
-                cursor.execute(
-                    """
-                    DELETE FROM ingested_items
-                    WHERE status = ?
-                      AND ingested_at < datetime('now', ? || ' days')
-                    """,
-                    (status, f"-{ttl_days}"),
-                )
-                count = cursor.rowcount
-                if count:
-                    deleted[status] = count
-            conn.commit()
-        return deleted
 
     # Utility methods
 
