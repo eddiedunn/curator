@@ -19,6 +19,11 @@ class ServiceBusyError(Exception):
     pass
 
 
+def _is_dns_error(exc: BaseException) -> bool:
+    """Return True for transient DNS resolution failures (Errno -2 / -3)."""
+    return isinstance(exc, OSError) and exc.errno in (-2, -3)
+
+
 def _format_diarized_text(segments: list[dict]) -> str:
     """Format transcription segments into speaker-labeled paragraphs.
 
@@ -173,6 +178,15 @@ class IngestionOrchestrator:
 
         except Exception as e:
             error_msg = str(e)
+
+            if _is_dns_error(e):
+                logger.warning("Transient DNS failure, will retry next scan", error=error_msg, url=url)
+                if item_id is not None:
+                    self.storage.update_ingested_item(item_id, status="pending", error_message=error_msg)
+                if job_id:
+                    self.storage.update_fetch_job(job_id, status="failed", error_message=error_msg)
+                return False
+
             logger.error("Ingestion failed", error=error_msg, url=url)
 
             # Update ingested item status to failed if it was created

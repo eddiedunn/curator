@@ -372,8 +372,13 @@ class YouTubePlugin(IngestionPlugin):
         }
 
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
+            # Run in executor so the synchronous yt-dlp call doesn't block the
+            # event loop (blocking the loop disrupts async DNS resolution on resume).
+            loop = asyncio.get_event_loop()
+            def _download():
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([url])
+            await loop.run_in_executor(None, _download)
 
             if audio_path.exists():
                 return audio_path
