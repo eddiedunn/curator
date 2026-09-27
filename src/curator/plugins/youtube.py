@@ -19,6 +19,7 @@ from typing import Optional, List, Dict, TypeVar, Callable, Any
 import yt_dlp
 
 from curator.plugins.base import (
+    ContentUnavailableError,
     IngestionPlugin,
     ContentMetadata,
     ContentResult,
@@ -34,6 +35,28 @@ from curator.plugins.youtube_utils import (
 logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
+
+# yt-dlp error fragments meaning the video will never be fetchable by us.
+# Kept deliberately narrow: anything not matched is treated as transient.
+_PERMANENTLY_UNAVAILABLE_MARKERS = (
+    'members-only content',
+    "available to this channel's members",
+    'private video',
+    'video has been removed',
+    'video unavailable',
+)
+# YouTube's rate-limit response reuses "Video unavailable" wording.
+_TRANSIENT_MARKERS = (
+    'try again later',
+)
+
+
+def is_permanently_unavailable(message: str) -> bool:
+    """Return True if a yt-dlp error message means retrying cannot succeed."""
+    msg = message.lower()
+    if any(marker in msg for marker in _TRANSIENT_MARKERS):
+        return False
+    return any(marker in msg for marker in _PERMANENTLY_UNAVAILABLE_MARKERS)
 
 
 def with_retry(
@@ -70,6 +93,8 @@ def with_retry(
                     if 'private video' in error_msg:
                         raise
                     if 'removed' in error_msg:
+                        raise
+                    if is_permanently_unavailable(error_msg):
                         raise
 
                     if attempt == max_attempts:
@@ -307,6 +332,9 @@ class YouTubePlugin(IngestionPlugin):
             )
 
         except yt_dlp.utils.DownloadError as e:
+            if is_permanently_unavailable(str(e)):
+                logger.info(f"Video permanently unavailable, not retrying: {source_url}: {e}")
+                raise ContentUnavailableError(str(e), content_id=video_id) from e
             logger.error(f"yt-dlp error for {source_url}: {e}")
             return None
         except Exception as e:

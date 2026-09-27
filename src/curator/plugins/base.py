@@ -52,6 +52,15 @@ from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 
 
+class ContentUnavailableError(Exception):
+    """Raised by fetch_metadata when the source says the content can never be
+    fetched by us (e.g. members-only, private, removed). Retrying won't help."""
+
+    def __init__(self, message: str, content_id: str):
+        super().__init__(message)
+        self.content_id = content_id
+
+
 @dataclass
 class ContentMetadata:
     """Metadata about a piece of content, returned by fetch_metadata.
