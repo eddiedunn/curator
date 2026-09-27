@@ -2,6 +2,7 @@
 name = "curator"
 version = "0.1.0"
 description = "Content acquisition and curation service"
+requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.109.0",
     "uvicorn[standard]>=0.27.0",
