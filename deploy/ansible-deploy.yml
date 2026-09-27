@@ -22,7 +22,6 @@
       ansible.builtin.command:
         cmd: >
           podman build
-          --format docker
           -t localhost/curator:latest
           -f deploy/Dockerfile
           .

@@ -11,6 +11,13 @@ Network=gpu-services
 Network=engram-net
 PublishPort=127.0.0.1:8950:8950
 
+# Health check lives here, not in the Dockerfile: the registry stores OCI
+# images, which drop HEALTHCHECK, and the daemon shares this image.
+HealthCmd=curl -fsS http://localhost:8950/health
+HealthInterval=30s
+HealthTimeout=10s
+HealthRetries=3
+
 Environment=CURATOR_ENGRAM_API_URL=http://engram:8800
 Environment=CURATOR_TRANSCRIBE_SERVICE_URL=http://diarized-transcriber:8000
 Environment=CURATOR_DATABASE_URL=sqlite:////data/curator.db
