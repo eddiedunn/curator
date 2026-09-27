@@ -184,6 +184,7 @@ async def detailed_status(api_key: Optional[str] = Depends(verify_api_key)):
             failed_items=counts_by_status.get("failed", 0),
             pending_items=counts_by_status.get("pending", 0),
             processing_items=counts_by_status.get("processing", 0),
+            skipped_items=counts_by_status.get("skipped", 0),
             check_interval_seconds=settings.check_interval,
         )
     except Exception as e:

@@ -27,6 +27,7 @@ class IngestionStatus(str, Enum):
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     FAILED = "failed"
+    SKIPPED = "skipped"  # permanently unavailable (members-only, private, removed); never retried
 
 
 class SubscriptionCreate(BaseModel):
@@ -130,6 +131,7 @@ class StatusResponse(BaseModel):
     failed_items: int = 0
     pending_items: int = 0
     processing_items: int = 0
+    skipped_items: int = 0
     check_interval_seconds: int = 3600
 
 

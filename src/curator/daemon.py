@@ -14,6 +14,7 @@ from curator.storage import CuratorStorage
 from curator.config import CuratorSettings
 from curator.orchestrator import IngestionOrchestrator
 from curator.models import SubscriptionStatus
+from curator.plugins.base import ContentUnavailableError
 
 logger = structlog.get_logger()
 
@@ -246,7 +247,11 @@ class SubscriptionDaemon:
             else:
                 # For single-item subscriptions (like individual videos, RSS items)
                 # Check if this content is already ingested
-                metadata = await plugin.fetch_metadata(source_url)
+                try:
+                    metadata = await plugin.fetch_metadata(source_url)
+                except ContentUnavailableError as e:
+                    logger.warning("Content permanently unavailable", subscription_id=sub_id, error=str(e))
+                    return
                 if not metadata:
                     logger.warning("Failed to fetch metadata", subscription_id=sub_id)
                     return

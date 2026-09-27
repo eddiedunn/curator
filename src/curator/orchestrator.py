@@ -2,9 +2,10 @@ import httpx
 import structlog
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
-from curator.plugins.base import IngestionPlugin, ContentMetadata
+from curator.plugins.base import IngestionPlugin, ContentMetadata, ContentUnavailableError
 from curator.plugins.youtube import YouTubePlugin
 from curator.plugins.youtube_utils import is_youtube_url
+from curator.models import IngestionStatus
 from curator.chunking import chunk_by_semantic, chunk_with_timestamps
 
 if TYPE_CHECKING:
@@ -154,6 +155,36 @@ class IngestionOrchestrator:
 
             logger.info("Ingestion completed", content_id=content_id, url=url)
             return True
+
+        except ContentUnavailableError as e:
+            # Members-only / private / removed: record it as skipped so the
+            # daemon's "already ingested" check stops re-attempting it.
+            error_msg = str(e)
+            logger.warning("Content permanently unavailable, skipping", error=error_msg, url=url)
+
+            source_type = plugin.source_type.lower()
+            item_id = self.storage.create_ingested_item(
+                source_type=source_type,
+                source_id=e.content_id,
+                source_url=url,
+                title=e.content_id,
+                subscription_id=subscription_id,
+            )
+            if item_id is None:
+                existing = self.storage.get_ingested_item_by_source(source_type, e.content_id)
+                if existing:
+                    item_id = existing["id"]
+            if item_id is not None:
+                self.storage.update_ingested_item(
+                    item_id,
+                    status=IngestionStatus.SKIPPED.value,
+                    error_message=error_msg,
+                )
+
+            if job_id:
+                self.storage.update_fetch_job(job_id, status="failed", error_message=error_msg)
+
+            return False
 
         except ServiceBusyError as e:
             error_msg = str(e)
