@@ -14,7 +14,7 @@ from curator.storage import CuratorStorage
 from curator.config import CuratorSettings
 from curator.orchestrator import IngestionOrchestrator
 from curator.models import SubscriptionStatus
-from curator.plugins.base import ContentUnavailableError
+from curator.plugins.base import ContentNotYetAvailableError, ContentUnavailableError, RateLimitedError
 
 logger = structlog.get_logger()
 
@@ -192,6 +192,9 @@ class SubscriptionDaemon:
         """Check all subscriptions for new content."""
         logger.debug("Checking subscriptions")
 
+        if self._youtube_paused("subscription scan"):
+            return
+
         try:
             # Get subscriptions due for checking
             subscriptions = self.storage.get_subscriptions_due_for_check()
@@ -204,6 +207,8 @@ class SubscriptionDaemon:
 
             # Process each subscription
             for sub in subscriptions:
+                if self._youtube_paused("rest of subscription scan"):
+                    break
                 await self._process_subscription(sub)
 
         except Exception as e:
@@ -252,6 +257,9 @@ class SubscriptionDaemon:
                 except ContentUnavailableError as e:
                     logger.warning("Content permanently unavailable", subscription_id=sub_id, error=str(e))
                     return
+                except ContentNotYetAvailableError as e:
+                    logger.info("Content not yet available", subscription_id=sub_id, error=str(e))
+                    return
                 if not metadata:
                     logger.warning("Failed to fetch metadata", subscription_id=sub_id)
                     return
@@ -288,6 +296,10 @@ class SubscriptionDaemon:
                 status=SubscriptionStatus.ACTIVE.value,
                 last_error=None,
             )
+
+        except RateLimitedError as e:
+            # YouTube is blocking us; the subscription itself is fine.
+            self.orchestrator.youtube_cooldown.trip(str(e))
 
         except Exception as e:
             error_msg = f"Error processing subscription: {str(e)}"
@@ -362,6 +374,9 @@ class SubscriptionDaemon:
                 )
                 # Continue with other videos even if one fails
 
+            if self._youtube_paused("rest of channel scan"):
+                break
+
         logger.info(
             f"Processed YouTube channel",
             subscription_id=sub_id,
@@ -376,6 +391,9 @@ class SubscriptionDaemon:
         from curator import glimpse_client
 
         logger.debug("Running visual context enrichment job")
+
+        if self._youtube_paused("visual context enrichment"):
+            return
 
         try:
             items = self.storage.get_items_pending_visual_context(
@@ -395,7 +413,9 @@ class SubscriptionDaemon:
         for item in items:
             item_id = item["id"]
             source_id = item["source_id"]  # YouTube video ID
-            attempts = item.get("visual_context_attempts", 0) + 1
+            previous_status = item.get("visual_context_status")
+            previous_attempts = item.get("visual_context_attempts", 0)
+            attempts = previous_attempts + 1
 
             self.storage.update_visual_context_status(item_id, "processing", attempts)
 
@@ -473,10 +493,29 @@ class SubscriptionDaemon:
                 self.storage.update_visual_context_status(item_id, "complete", attempts)
                 log.info("visual_context_enrichment_complete", frame_count=len(frames))
 
+            except RateLimitedError as exc:
+                # glimpse's yt-dlp hit YouTube's bot check: put the item back
+                # untouched and stop until the cool-down ends.
+                self.orchestrator.youtube_cooldown.trip(str(exc))
+                self.storage.update_visual_context_status(item_id, previous_status, previous_attempts)
+                break
+
             except Exception as exc:
                 log.error("visual_context_enrichment_failed", error=str(exc))
                 status = "failed" if attempts >= self.settings.glimpse_max_attempts else "failed"
                 self.storage.update_visual_context_status(item_id, status, attempts)
+
+    def _youtube_paused(self, what: str) -> bool:
+        """True (and logs what is skipped) while the YouTube cool-down is on."""
+        cooldown = self.orchestrator.youtube_cooldown
+        if cooldown.active:
+            logger.info(
+                "YouTube cool-down active, skipping",
+                skipped=what,
+                remaining_minutes=cooldown.remaining_minutes,
+            )
+            return True
+        return False
 
     async def _purge_expired_content(self):
         """Delete completed items that have exceeded their subscription's content_ttl_days."""

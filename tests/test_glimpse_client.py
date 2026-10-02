@@ -288,3 +288,38 @@ async def test_collect_visual_context_partial_failures():
     assert len(result) == 2
     assert result[0]["timestamp_sec"] == pytest.approx(42.0)
     assert result[1]["timestamp_sec"] == pytest.approx(200.0)
+
+
+@pytest.mark.asyncio
+async def test_select_frames_bot_check_payload_raises_rate_limited():
+    """glimpse's yt-dlp hitting YouTube's bot check is surfaced, not papered over."""
+    from curator.plugins.base import RateLimitedError
+
+    response_data = {
+        "video_id": "abc123",
+        "selected_timestamps": [],
+        "error": "stream_url_failed: yt-dlp -g failed rc=1: ERROR: [youtube] abc123: "
+                 "Sign in to confirm you're not a bot. Use --cookies-from-browser or --cookies",
+    }
+    mock_response = MagicMock()
+    mock_response.json.return_value = response_data
+    mock_response.raise_for_status = MagicMock()
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        with pytest.raises(RateLimitedError):
+            await select_frames(
+                video_id="abc123",
+                duration_seconds=300.0,
+                segment_timestamps=[],
+                glimpse_url="http://glimpse:8730",
+                max_frames=5,
+                scene_threshold=0.3,
+                proximity_seconds=5.0,
+                timeout_seconds=180.0,
+                fallback_interval_seconds=60,
+            )

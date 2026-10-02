@@ -61,6 +61,22 @@ class ContentUnavailableError(Exception):
         self.content_id = content_id
 
 
+class ContentNotYetAvailableError(Exception):
+    """Raised by fetch_metadata for content that exists but cannot be fetched
+    yet (an upcoming premiere or a live event that has not started). No row is
+    recorded, so a later scan picks it up naturally."""
+
+    def __init__(self, message: str, content_id: str):
+        super().__init__(message)
+        self.content_id = content_id
+
+
+class RateLimitedError(Exception):
+    """Raised when the source is blocking us (YouTube's "Sign in to confirm
+    you're not a bot", HTTP 429). Not a property of the content: callers should
+    stop making requests to the source for a while, not give up on the item."""
+
+
 @dataclass
 class ContentMetadata:
     """Metadata about a piece of content, returned by fetch_metadata.

@@ -1,8 +1,17 @@
+import time
+from datetime import datetime, timedelta, timezone
+
 import httpx
 import structlog
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
-from curator.plugins.base import IngestionPlugin, ContentMetadata, ContentUnavailableError
+from curator.plugins.base import (
+    IngestionPlugin,
+    ContentMetadata,
+    ContentNotYetAvailableError,
+    ContentUnavailableError,
+    RateLimitedError,
+)
 from curator.plugins.youtube import YouTubePlugin
 from curator.plugins.youtube_utils import is_youtube_url
 from curator.models import IngestionStatus
@@ -18,6 +27,48 @@ logger = structlog.get_logger()
 class ServiceBusyError(Exception):
     """Raised when the transcription service returns 503 (temporarily unavailable)."""
     pass
+
+
+class YouTubeCooldown:
+    """Pause on YouTube requests after a bot check / rate limit.
+
+    Each hit in a row doubles the pause (up to max_minutes); a successful
+    ingestion resets it. Hits while already paused don't extend the pause.
+    """
+
+    def __init__(self, base_minutes: float, max_minutes: float, clock=time.monotonic):
+        self._base_minutes = base_minutes
+        self._max_minutes = max_minutes
+        self._next_minutes = base_minutes
+        self._clock = clock
+        self._until: float | None = None
+
+    @property
+    def active(self) -> bool:
+        return self._until is not None and self._clock() < self._until
+
+    @property
+    def remaining_minutes(self) -> float:
+        if not self.active:
+            return 0.0
+        return round((self._until - self._clock()) / 60, 1)
+
+    def trip(self, reason: str) -> None:
+        if self.active:
+            return
+        minutes = self._next_minutes
+        self._until = self._clock() + minutes * 60
+        self._next_minutes = min(minutes * 2, self._max_minutes)
+        resume_at = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+        logger.warning(
+            "YouTube bot check / rate limit hit; pausing all YouTube requests",
+            cooldown_minutes=minutes,
+            resume_at=resume_at.isoformat(timespec="seconds"),
+            reason=reason[:200],
+        )
+
+    def record_success(self) -> None:
+        self._next_minutes = self._base_minutes
 
 
 def _is_dns_error(exc: BaseException) -> bool:
@@ -74,6 +125,10 @@ class IngestionOrchestrator:
         self.settings = settings
         self._engram_url = settings.engram_api_url
         self._transcribe_url = settings.transcribe_service_url
+        self.youtube_cooldown = YouTubeCooldown(
+            settings.youtube_cooldown_minutes,
+            settings.youtube_cooldown_max_minutes,
+        )
         # Long timeout for transcription (1 hour default)
         self._transcribe_timeout = httpx.Timeout(
             connect=30.0,
@@ -153,8 +208,31 @@ class IngestionOrchestrator:
                     content_id=content_id
                 )
 
+            self.youtube_cooldown.record_success()
             logger.info("Ingestion completed", content_id=content_id, url=url)
             return True
+
+        except RateLimitedError as e:
+            # Not the video's fault: never skip it. A row (if any) is left
+            # failed so the daemon's retry picks it up after the cool-down.
+            error_msg = (
+                "Blocked by YouTube's bot check / rate limit; try again later. "
+                f"yt-dlp: {e}"
+            )
+            self.youtube_cooldown.trip(str(e))
+            if item_id is not None:
+                self.storage.update_ingested_item(item_id, status="failed", error_message=error_msg)
+            if job_id:
+                self.storage.update_fetch_job(job_id, status="failed", error_message=error_msg)
+            return False
+
+        except ContentNotYetAvailableError as e:
+            # Upcoming premiere / live event not started. No row is recorded,
+            # so the next channel scan picks it up once it is out.
+            logger.info("Video not yet available, will retry on a later scan", error=str(e), url=url)
+            if job_id:
+                self.storage.update_fetch_job(job_id, status="failed", error_message=str(e))
+            return False
 
         except ContentUnavailableError as e:
             # Members-only / private / removed: record it as skipped so the

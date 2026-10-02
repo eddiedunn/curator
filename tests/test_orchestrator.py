@@ -118,3 +118,40 @@ async def test_single_video_subscription_unavailable_does_not_error_subscription
             await daemon._process_subscription(subscription)
 
     assert not any("error" in str(call).lower() for call in mock_update.call_args_list)
+
+
+PREMIERE_MSG = f"ERROR: [youtube] {VIDEO_ID}: Premieres in 8 hours"
+
+
+@pytest.mark.asyncio
+async def test_ingest_url_upcoming_premiere_logs_info_and_leaves_no_row(storage, settings):
+    """A premiere is not an error: info log only, no row, so a later scan retries it."""
+    from structlog.testing import capture_logs
+    from curator.plugins.base import ContentNotYetAvailableError
+
+    orchestrator = IngestionOrchestrator(storage, settings)
+    plugin = _plugin(AsyncMock(side_effect=ContentNotYetAvailableError(PREMIERE_MSG, content_id=VIDEO_ID)))
+
+    with patch.object(orchestrator, "_get_plugin_for_url", return_value=plugin):
+        with capture_logs() as logs:
+            result = await orchestrator.ingest_url(VIDEO_URL)
+
+    assert result is False
+    assert storage.get_ingested_item_by_source("youtube", VIDEO_ID) is None
+    assert not [entry for entry in logs if entry["log_level"] == "error"]
+    assert any(entry["log_level"] == "info" and "not yet available" in entry["event"] for entry in logs)
+
+
+@pytest.mark.asyncio
+async def test_single_video_subscription_premiere_does_not_error_subscription(storage, settings):
+    from curator.plugins.base import ContentNotYetAvailableError
+
+    daemon = SubscriptionDaemon(storage, settings)
+    plugin = _plugin(AsyncMock(side_effect=ContentNotYetAvailableError(PREMIERE_MSG, content_id=VIDEO_ID)))
+    subscription = {"id": 1, "name": "Test", "source_url": VIDEO_URL, "subscription_type": "youtube_video"}
+
+    with patch.object(daemon.orchestrator, "_get_plugin_for_url", return_value=plugin):
+        with patch.object(daemon.storage, "update_subscription") as mock_update:
+            await daemon._process_subscription(subscription)
+
+    assert not any("error" in str(call).lower() for call in mock_update.call_args_list)

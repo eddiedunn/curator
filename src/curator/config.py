@@ -38,6 +38,12 @@ class CuratorSettings(BaseSettings):
     api_port: int = 8950
     api_key: str | None = None
 
+    # Pause on all YouTube requests (scans, retries, visual context) after
+    # YouTube answers with its bot check / rate limit. Doubles on each hit in a
+    # row, up to the max; resets after a successful ingestion.
+    youtube_cooldown_minutes: int = 60
+    youtube_cooldown_max_minutes: int = 360
+
     # Rate limits (per hour)
     youtube_rate_limit: int = 100
     rss_rate_limit: int = 1000

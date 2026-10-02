@@ -5,6 +5,9 @@ from typing import Any
 import httpx
 import structlog
 
+from curator.plugins.base import RateLimitedError
+from curator.plugins.youtube import is_rate_limited
+
 logger = structlog.get_logger()
 
 
@@ -71,6 +74,9 @@ async def select_frames(
         return _naive_interval_timestamps(duration_seconds, fallback_interval_seconds, max_frames)
 
     if data.get("error") and not data.get("selected_timestamps"):
+        if is_rate_limited(str(data["error"])):
+            # glimpse's yt-dlp hit YouTube's bot check; let the daemon back off.
+            raise RateLimitedError(str(data["error"]))
         logger.warning(
             "glimpse_select_frames_error_payload",
             video_id=video_id,

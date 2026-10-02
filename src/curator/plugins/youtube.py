@@ -19,7 +19,9 @@ from typing import Optional, List, Dict, TypeVar, Callable, Any
 import yt_dlp
 
 from curator.plugins.base import (
+    ContentNotYetAvailableError,
     ContentUnavailableError,
+    RateLimitedError,
     IngestionPlugin,
     ContentMetadata,
     ContentResult,
@@ -45,17 +47,41 @@ _PERMANENTLY_UNAVAILABLE_MARKERS = (
     'video has been removed',
     'video unavailable',
 )
-# YouTube's rate-limit response reuses "Video unavailable" wording.
-_TRANSIENT_MARKERS = (
+# YouTube is blocking this host: back off from YouTube entirely for a while.
+# ("Sign in to confirm you’re not a bot" uses a curly apostrophe, so match on
+# "not a bot".) YouTube's rate-limit response also reuses "Video unavailable"
+# wording, followed by "try again later".
+_RATE_LIMIT_MARKERS = (
+    'not a bot',
+    'http error 429',
+    'too many requests',
     'try again later',
 )
+# Upcoming premieres / live events that have not started: fine later.
+_NOT_YET_AVAILABLE_MARKERS = (
+    'premieres in',
+    'premiere will begin',
+    'live event will begin',
+)
+
+
+def is_rate_limited(message: str) -> bool:
+    """Return True if a yt-dlp error message means YouTube is blocking us."""
+    msg = message.lower()
+    return any(marker in msg for marker in _RATE_LIMIT_MARKERS)
+
+
+def is_not_yet_available(message: str) -> bool:
+    """Return True if a yt-dlp error message means the video is not out yet."""
+    msg = message.lower()
+    return any(marker in msg for marker in _NOT_YET_AVAILABLE_MARKERS)
 
 
 def is_permanently_unavailable(message: str) -> bool:
     """Return True if a yt-dlp error message means retrying cannot succeed."""
-    msg = message.lower()
-    if any(marker in msg for marker in _TRANSIENT_MARKERS):
+    if is_rate_limited(message) or is_not_yet_available(message):
         return False
+    msg = message.lower()
     return any(marker in msg for marker in _PERMANENTLY_UNAVAILABLE_MARKERS)
 
 
@@ -88,6 +114,8 @@ def with_retry(
                     error_msg = str(e).lower()
 
                     # Don't retry for certain errors
+                    if is_rate_limited(error_msg) or is_not_yet_available(error_msg):
+                        raise
                     if 'video unavailable' in error_msg:
                         raise
                     if 'private video' in error_msg:
@@ -144,6 +172,9 @@ class YouTubePlugin(IngestionPlugin):
         """
         self.cookies_path = cookies_path
         self._ydl_opts = self._build_ydl_opts()
+        # Reason for the last fetch_metadata() that returned None, so callers
+        # can record it instead of a generic "failed to fetch" message.
+        self.last_error: Optional[str] = None
 
     def _build_ydl_opts(self) -> dict:
         """Build yt-dlp options."""
@@ -272,6 +303,8 @@ class YouTubePlugin(IngestionPlugin):
                 return video_ids
 
         except yt_dlp.utils.DownloadError as e:
+            if is_rate_limited(str(e)):
+                raise RateLimitedError(str(e)) from e
             logger.error(f"yt-dlp error fetching channel {channel_url}: {e}")
             return []
         except Exception as e:
@@ -291,9 +324,11 @@ class YouTubePlugin(IngestionPlugin):
         Returns:
             ContentMetadata with video information, or None if not found/error
         """
+        self.last_error = None
         video_id = extract_video_id(source_url)
         if not video_id:
-            logger.error(f"Could not extract video ID from: {source_url}")
+            self.last_error = f"Could not extract video ID from: {source_url}"
+            logger.error(self.last_error)
             return None
 
         try:
@@ -332,13 +367,20 @@ class YouTubePlugin(IngestionPlugin):
             )
 
         except yt_dlp.utils.DownloadError as e:
+            if is_rate_limited(str(e)):
+                raise RateLimitedError(str(e)) from e
+            if is_not_yet_available(str(e)):
+                logger.info(f"Video not yet available, will retry on a later scan: {source_url}: {e}")
+                raise ContentNotYetAvailableError(str(e), content_id=video_id) from e
             if is_permanently_unavailable(str(e)):
                 logger.info(f"Video permanently unavailable, not retrying: {source_url}: {e}")
                 raise ContentUnavailableError(str(e), content_id=video_id) from e
             logger.error(f"yt-dlp error for {source_url}: {e}")
+            self.last_error = str(e)
             return None
         except Exception as e:
             logger.error(f"Unexpected error fetching metadata: {e}")
+            self.last_error = str(e)
             return None
 
     async def fetch_content(self, metadata: ContentMetadata) -> Optional[ContentResult]:
@@ -414,8 +456,12 @@ class YouTubePlugin(IngestionPlugin):
             return None
 
         except Exception as e:
+            if is_rate_limited(str(e)):
+                raise RateLimitedError(str(e)) from e
             logger.error(f"Error downloading audio for {video_id}: {e}")
-            return None
+            # Not a DownloadError, so with_retry passes it straight through
+            # (same single attempt as before) while keeping yt-dlp's reason.
+            raise RuntimeError(f"Audio download failed: {e}") from e
 
     def estimate_cost(self, metadata: ContentMetadata) -> CostEstimate:
         """
