@@ -155,6 +155,29 @@ class IngestionOrchestrator:
             pool=30.0
         )
 
+    def _older_than_subscription_limit(
+        self, subscription_id: Optional[int], published_at: Optional[str]
+    ) -> Optional[str]:
+        """Reason text if the video is past its subscription's content_ttl_days, else None."""
+        if subscription_id is None or not published_at:
+            return None
+        subscription = self.storage.get_subscription(subscription_id)
+        ttl_days = (subscription or {}).get("content_ttl_days")
+        if not ttl_days:
+            return None
+        try:
+            published = datetime.fromisoformat(published_at)
+        except ValueError:
+            return None
+        if published.tzinfo is not None:
+            published = published.astimezone().replace(tzinfo=None)
+        if published >= datetime.now() - timedelta(days=ttl_days):
+            return None
+        return (
+            f"Published {published.date().isoformat()}, older than the subscription's "
+            f"{ttl_days}-day limit; not collected."
+        )
+
     async def ingest_url(
         self,
         url: str,
@@ -211,6 +234,16 @@ class IngestionOrchestrator:
                 existing = self.storage.get_ingested_item_by_source(source_type, metadata.content_id)
                 if existing:
                     item_id = existing["id"]
+
+            # Past the subscription's age limit already: record it, don't collect it.
+            too_old = self._older_than_subscription_limit(subscription_id, metadata.published_at)
+            if too_old:
+                logger.info("Video older than subscription limit, not collecting", url=url, reason=too_old)
+                if item_id is not None:
+                    self.storage.update_ingested_item(item_id, status="skipped", error_message=too_old)
+                if job_id:
+                    self.storage.update_fetch_job(job_id, status="failed", error_message=too_old)
+                return False
 
             # Call the main ingest method, passing pre-fetched metadata to avoid
             # a redundant fetch_metadata call inside ingest().

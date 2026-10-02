@@ -6,6 +6,7 @@ import signal
 import sys
 from datetime import datetime
 from pathlib import Path
+import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 import structlog
@@ -564,13 +565,41 @@ class SubscriptionDaemon:
         return False
 
     async def _purge_expired_content(self):
-        """Delete completed items that have exceeded their subscription's content_ttl_days."""
+        """Remove items past their subscription's content_ttl_days (by publish date).
+
+        The content is deleted from Engram, and the curator row is kept as
+        'skipped' so the next channel scan doesn't collect the video again.
+        If Engram can't be reached the row is left as is and retried next run.
+        """
         logger.debug("Running content expiration purge")
         try:
-            deleted = self.storage.delete_expired_content()
-            if deleted:
-                logger.info("Purged expired content items", deleted=deleted)
-            else:
+            items = self.storage.get_expired_items()
+            if not items:
                 logger.debug("No expired content to purge")
+                return
+
+            today = datetime.now().date().isoformat()
+            removed = 0
+            async with httpx.AsyncClient(base_url=self.settings.engram_api_url, timeout=60) as client:
+                for item in items:
+                    response = await client.delete(f"/api/v1/content/{item['source_id']}")
+                    if response.status_code not in (200, 204, 404):
+                        logger.warning(
+                            "Could not remove expired content from Engram",
+                            source_id=item["source_id"],
+                            status_code=response.status_code,
+                        )
+                        continue
+                    published = (item.get("published_at") or item.get("ingested_at") or "")[:10]
+                    self.storage.update_ingested_item(
+                        item["id"],
+                        status="skipped",
+                        error_message=(
+                            f"Expired: published {published}, older than the subscription's "
+                            f"{item['content_ttl_days']}-day limit; removed from Engram {today}."
+                        ),
+                    )
+                    removed += 1
+            logger.info("Purged expired content items", removed=removed, found=len(items))
         except Exception as exc:
             logger.error("Content expiration purge failed", error=str(exc))

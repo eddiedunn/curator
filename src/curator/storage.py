@@ -500,27 +500,27 @@ class CuratorStorage:
             conn.commit()
             return cursor.rowcount > 0
 
-    def delete_expired_content(self) -> int:
-        """Delete completed ingested_items older than each subscription's content_ttl_days.
+    def get_expired_items(self) -> List[Dict[str, Any]]:
+        """Items older than their subscription's content_ttl_days, by publish date.
 
-        Only subscriptions with content_ttl_days IS NOT NULL are considered.
-        Returns the count of deleted rows.
+        Age counts from published_at, or from ingested_at when the publish date
+        is unknown. Only subscriptions with content_ttl_days set are considered,
+        and already-skipped items are left out. Each row carries the
+        subscription's content_ttl_days.
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                DELETE FROM ingested_items
-                WHERE status = 'completed'
-                  AND subscription_id IN (
-                    SELECT id FROM subscriptions WHERE content_ttl_days IS NOT NULL
-                  )
-                  AND ingested_at < datetime('now', '-' || (
-                    SELECT content_ttl_days FROM subscriptions
-                    WHERE id = ingested_items.subscription_id
-                  ) || ' days')
+                SELECT i.*, s.content_ttl_days
+                FROM ingested_items i
+                JOIN subscriptions s ON s.id = i.subscription_id
+                WHERE s.content_ttl_days IS NOT NULL
+                  AND i.status != 'skipped'
+                  AND datetime(COALESCE(i.published_at, i.ingested_at))
+                      < datetime('now', '-' || s.content_ttl_days || ' days')
+                ORDER BY i.id
             """)
-            conn.commit()
-            return cursor.rowcount
+            return [self._row_to_dict(row) for row in cursor.fetchall()]
 
     # Fetch job methods
 
