@@ -600,6 +600,31 @@ class CuratorStorage:
             conn.commit()
             return cursor.rowcount > 0
 
+    def reset_visual_context_items(
+        self, subscription_id: Optional[int] = None, all_failed: bool = False
+    ) -> int:
+        """Put failed visual context items back in the enrichment queue.
+
+        Clears visual_context_status and visual_context_attempts on items whose
+        enrichment failed, for one subscription or (all_failed) every
+        subscription. Returns the number of items reset.
+        """
+        if subscription_id is None and not all_failed:
+            return 0
+        query = (
+            "UPDATE ingested_items SET visual_context_status = NULL, "
+            "visual_context_attempts = 0 WHERE visual_context_status = 'failed'"
+        )
+        params: list = []
+        if subscription_id is not None:
+            query += " AND subscription_id = ?"
+            params.append(subscription_id)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            conn.commit()
+            return cursor.rowcount
+
     def _reset_stuck_visual_context_items(self) -> None:
         """Reset any items left in 'processing' state (e.g. from a crashed daemon)."""
         with self._get_connection() as conn:
