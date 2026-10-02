@@ -74,6 +74,8 @@ class CuratorStorage:
                     metadata TEXT DEFAULT '{}',
                     visual_context_status TEXT,
                     visual_context_attempts INTEGER NOT NULL DEFAULT 0,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    next_retry_at TIMESTAMP,
                     FOREIGN KEY (subscription_id) REFERENCES subscriptions(id) ON DELETE SET NULL,
                     UNIQUE(source_type, source_id)
                 )
@@ -160,6 +162,17 @@ class CuratorStorage:
                 "ALTER TABLE ingested_items ADD COLUMN "
                 "visual_context_attempts INTEGER NOT NULL DEFAULT 0"
             )
+
+        # ingested_items: automatic retry bookkeeping
+        if 'retry_count' not in item_cols:
+            logger.info("Adding retry_count column to ingested_items table")
+            cursor.execute(
+                "ALTER TABLE ingested_items ADD COLUMN "
+                "retry_count INTEGER NOT NULL DEFAULT 0"
+            )
+        if 'next_retry_at' not in item_cols:
+            logger.info("Adding next_retry_at column to ingested_items table")
+            cursor.execute("ALTER TABLE ingested_items ADD COLUMN next_retry_at TIMESTAMP")
 
     @contextmanager
     def _get_connection(self):
@@ -436,6 +449,54 @@ class CuratorStorage:
                 UPDATE ingested_items SET {set_clause}
                 WHERE id = ?
             """, values)
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_items_due_for_retry(
+        self,
+        max_attempts: int,
+        first_retry_hours: float,
+        stale_pending_hours: float,
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        """Failed items (and pending ones stuck for stale_pending_hours) whose
+        next retry is due and that have retries left, longest-waiting first.
+
+        Before the first retry next_retry_at is NULL and the row's creation
+        time stands in for the failure time. 'skipped' is never retried, nor
+        are items of a disabled subscription.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM ingested_items
+                WHERE retry_count < ?
+                  AND (subscription_id IS NULL
+                       OR subscription_id NOT IN (SELECT id FROM subscriptions WHERE enabled = 0))
+                  AND (
+                    (status = 'failed'
+                     AND COALESCE(datetime(next_retry_at),
+                                  datetime(ingested_at, '+' || ? || ' hours')) <= datetime('now'))
+                    OR
+                    (status = 'pending'
+                     AND datetime(ingested_at) <= datetime('now', '-' || ? || ' hours')
+                     AND (next_retry_at IS NULL OR datetime(next_retry_at) <= datetime('now')))
+                  )
+                ORDER BY COALESCE(datetime(next_retry_at), datetime(ingested_at)) ASC
+                LIMIT ?
+            """, (max_attempts, first_retry_hours, stale_pending_hours, limit))
+            return [self._row_to_dict(row) for row in cursor.fetchall()]
+
+    def mark_retry_attempt(self, item_id: int, next_retry_in_hours: float) -> bool:
+        """Count one retry and schedule the next one (used if this one fails)."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE ingested_items
+                SET retry_count = retry_count + 1,
+                    next_retry_at = datetime('now', '+' || ? || ' hours')
+                WHERE id = ?
+            """, (next_retry_in_hours, item_id))
             conn.commit()
             return cursor.rowcount > 0
 

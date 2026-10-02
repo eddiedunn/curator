@@ -201,9 +201,8 @@ class SubscriptionDaemon:
 
             if not subscriptions:
                 logger.debug("No subscriptions due for check")
-                return
-
-            logger.info("Found subscriptions to check", count=len(subscriptions))
+            else:
+                logger.info("Found subscriptions to check", count=len(subscriptions))
 
             # Process each subscription
             for sub in subscriptions:
@@ -213,6 +212,53 @@ class SubscriptionDaemon:
 
         except Exception as e:
             logger.error("Error checking subscriptions", error=str(e))
+
+        try:
+            await self._retry_failed_items()
+        except Exception as e:
+            logger.error("Error retrying failed items", error=str(e))
+
+    async def _retry_failed_items(self):
+        """Retry a few failed / stale pending items whose backoff has passed."""
+        if self._youtube_paused("retries"):
+            return
+
+        backoff = self.settings.retry_backoff_hours
+        items = self.storage.get_items_due_for_retry(
+            max_attempts=self.settings.retry_max_attempts,
+            first_retry_hours=backoff[0],
+            stale_pending_hours=self.settings.retry_stale_pending_hours,
+            limit=self.settings.retry_max_per_scan,
+        )
+        if not items:
+            return
+
+        logger.info("Retrying failed items", count=len(items))
+        for item in items:
+            if self._youtube_paused("rest of retries"):
+                break
+            attempt = item["retry_count"] + 1
+            self.storage.mark_retry_attempt(item["id"], backoff[min(attempt, len(backoff) - 1)])
+            logger.info(
+                "Retrying item",
+                item_id=item["id"],
+                source_id=item["source_id"],
+                attempt=attempt,
+                previous_error=(item.get("error_message") or "")[:200],
+            )
+            ok = await self.orchestrator.ingest_url(
+                item["source_url"],
+                subscription_id=item["subscription_id"],
+                item_id=item["id"],
+            )
+            if not ok and self.orchestrator.youtube_cooldown.active:
+                # Blocked by YouTube, not the item's fault: give the attempt back.
+                self.storage.update_ingested_item(
+                    item["id"],
+                    retry_count=item["retry_count"],
+                    next_retry_at=item["next_retry_at"],
+                )
+                break
 
     async def _process_subscription(self, subscription: dict):
         """Process a single subscription to check for new content.

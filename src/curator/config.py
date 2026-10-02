@@ -44,6 +44,15 @@ class CuratorSettings(BaseSettings):
     youtube_cooldown_minutes: int = 60
     youtube_cooldown_max_minutes: int = 360
 
+    # Automatic retries of failed items (and pending ones stuck longer than
+    # retry_stale_pending_hours). Retry N waits retry_backoff_hours[N-1]
+    # (the last value repeats); at most retry_max_per_scan retries per hourly
+    # scan, so a backlog can't turn into a burst of YouTube requests.
+    retry_max_attempts: int = 5
+    retry_backoff_hours: list[float] = [1, 4, 12, 24, 48]
+    retry_max_per_scan: int = 10
+    retry_stale_pending_hours: float = 6
+
     # Rate limits (per hour)
     youtube_rate_limit: int = 100
     rss_rate_limit: int = 1000

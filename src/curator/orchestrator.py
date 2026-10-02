@@ -158,7 +158,8 @@ class IngestionOrchestrator:
         self,
         url: str,
         subscription_id: Optional[int] = None,
-        job_id: Optional[str] = None
+        job_id: Optional[str] = None,
+        item_id: Optional[int] = None,
     ) -> bool:
         """Ingest content from URL (auto-detects plugin).
 
@@ -166,11 +167,12 @@ class IngestionOrchestrator:
             url: URL to ingest
             subscription_id: Optional subscription ID to associate with
             job_id: Optional job ID for status tracking
+            item_id: Existing ingested_items row being retried, so failures
+                before metadata is known are still recorded on it
 
         Returns:
             True on success, False on failure
         """
-        item_id: int | None = None
         try:
             # Update job status to processing if job_id provided
             if job_id:

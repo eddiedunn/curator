@@ -137,3 +137,19 @@ async def test_metadata_failure_reports_yt_dlp_reason_on_fetch_job(storage, sett
         assert await orchestrator.ingest_url(VIDEO_URL, job_id="job-1") is False
 
     assert "HTTP Error 503" in storage.get_fetch_job("job-1")["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_retry_metadata_failure_is_recorded_on_the_retried_row(storage, settings):
+    item_id = _existing_failed_row(storage)
+    orchestrator = IngestionOrchestrator(storage, settings)
+    plugin = _plugin(AsyncMock())
+    plugin.fetch_metadata = AsyncMock(return_value=None)
+    plugin.last_error = "ERROR: [youtube] abcdefghijk: Unable to download webpage: HTTP Error 503"
+
+    with patch.object(orchestrator, "_get_plugin_for_url", return_value=plugin):
+        assert await orchestrator.ingest_url(VIDEO_URL, item_id=item_id) is False
+
+    item = storage.get_ingested_item(item_id)
+    assert item["status"] == "failed"
+    assert "HTTP Error 503" in item["error_message"]
