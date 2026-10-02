@@ -16,6 +16,7 @@ from curator.plugins.youtube import YouTubePlugin
 from curator.plugins.youtube_utils import is_youtube_url
 from curator.models import IngestionStatus
 from curator.chunking import chunk_by_semantic, chunk_with_timestamps
+from curator.transcript_quality import NoSpeechDetectedError, check_transcript
 
 if TYPE_CHECKING:
     from curator.storage import CuratorStorage
@@ -256,6 +257,18 @@ class IngestionOrchestrator:
                 self.storage.update_fetch_job(job_id, status="failed", error_message=str(e))
             return False
 
+        except NoSpeechDetectedError as e:
+            # Silent video: nothing to store, and transcribing again won't help.
+            error_msg = str(e)
+            logger.info("No speech detected, skipping", error=error_msg, url=url)
+            if item_id is not None:
+                self.storage.update_ingested_item(
+                    item_id, status=IngestionStatus.SKIPPED.value, error_message=error_msg
+                )
+            if job_id:
+                self.storage.update_fetch_job(job_id, status="failed", error_message=error_msg)
+            return False
+
         except ContentUnavailableError as e:
             # Members-only / private / removed: record it as skipped so the
             # daemon's "already ingested" check stops re-attempting it.
@@ -395,6 +408,9 @@ class IngestionOrchestrator:
             # When needs_transcription=True, the audio file path is in content.text
             audio_path = Path(content.text)
             result = await self._transcribe(audio_path)
+            # Raises before anything reaches Engram: NoSpeechDetectedError
+            # (row skipped) or IncompleteTranscriptError (row failed, retried).
+            check_transcript(result["segments"], metadata.duration_seconds, metadata.title)
             content.text = _format_diarized_text(result["segments"])
             content.segments = result["segments"]
             speakers = result.get("speakers", [])
