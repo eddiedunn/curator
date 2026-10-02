@@ -71,6 +71,23 @@ class YouTubeCooldown:
         self._next_minutes = self._base_minutes
 
 
+def _metadata_failure_message(url: str, plugin: IngestionPlugin) -> str:
+    """'Failed to fetch metadata' plus the plugin's reason when it gave one."""
+    reason = getattr(plugin, "last_error", None)
+    if isinstance(reason, str) and reason:
+        return f"Failed to fetch metadata for {url}: {reason}"
+    return f"Failed to fetch metadata for {url}"
+
+
+def _chunk_count(response: httpx.Response) -> Optional[int]:
+    """chunk_count from an Engram content response (store or get), if present."""
+    try:
+        value = response.json().get("chunk_count")
+    except Exception:
+        return None
+    return value if isinstance(value, int) else None
+
+
 def _is_dns_error(exc: BaseException) -> bool:
     """Return True for transient DNS resolution failures (Errno -2 / -3)."""
     return isinstance(exc, OSError) and exc.errno in (-2, -3)
@@ -169,7 +186,7 @@ class IngestionOrchestrator:
             # Fetch metadata early so we can persist a record before the long ingest
             metadata = await plugin.fetch_metadata(url)
             if not metadata:
-                raise ValueError(f"Failed to fetch metadata for {url}")
+                raise ValueError(_metadata_failure_message(url, plugin))
 
             source_type = plugin.source_type.lower()
 
@@ -194,11 +211,14 @@ class IngestionOrchestrator:
 
             # Call the main ingest method, passing pre-fetched metadata to avoid
             # a redundant fetch_metadata call inside ingest().
-            _, content_id = await self.ingest(url, plugin, prefetched_metadata=metadata)
+            _, content_id, chunk_count = await self.ingest(url, plugin, prefetched_metadata=metadata)
 
-            # Update ingested item status to completed
+            # Mark completed and clear any error left by an earlier attempt
             if item_id is not None:
-                self.storage.update_ingested_item(item_id, status="completed")
+                fields = {"status": "completed", "error_message": None}
+                if chunk_count is not None:
+                    fields["chunk_count"] = chunk_count
+                self.storage.update_ingested_item(item_id, **fields)
 
             # Update job status to completed if job_id provided
             if job_id:
@@ -341,10 +361,11 @@ class IngestionOrchestrator:
         url: str,
         plugin: IngestionPlugin,
         prefetched_metadata: Optional[ContentMetadata] = None,
-    ) -> tuple[ContentMetadata, str]:
+    ) -> tuple[ContentMetadata, str, Optional[int]]:
         """Ingest content from URL using plugin.
 
-        Returns (metadata, content_id) on success.
+        Returns (metadata, content_id, chunk_count) on success; chunk_count is
+        Engram's count, or None if Engram did not report one.
         """
         # 1. Fetch metadata (skip if already fetched by caller)
         if prefetched_metadata is not None:
@@ -352,14 +373,14 @@ class IngestionOrchestrator:
         else:
             metadata = await plugin.fetch_metadata(url)
             if not metadata:
-                raise ValueError(f"Failed to fetch metadata for {url}")
+                raise ValueError(_metadata_failure_message(url, plugin))
 
         # 2. Check duplicate in Engram
         async with httpx.AsyncClient(base_url=self._engram_url) as client:
             response = await client.get(f"/api/v1/content/{metadata.content_id}")
             if response.status_code == 200:
                 logger.info("Content already exists", content_id=metadata.content_id)
-                return metadata, metadata.content_id
+                return metadata, metadata.content_id, _chunk_count(response)
 
         # 3. Fetch content
         content = await plugin.fetch_content(metadata)
@@ -402,7 +423,7 @@ class IngestionOrchestrator:
             )
             response.raise_for_status()
 
-        return metadata, metadata.content_id
+        return metadata, metadata.content_id, _chunk_count(response)
 
     async def _transcribe(self, audio_path: Path) -> dict:
         """Call Transcribe service (async with long timeout)."""
