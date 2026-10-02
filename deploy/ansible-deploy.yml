@@ -78,3 +78,13 @@
         XDG_RUNTIME_DIR: /run/user/1001
       changed_when: true
       listen: Reload and restart curator
+
+    # The daemon runs the same image (localhost/curator:latest) and does the
+    # scans and retries, so it must pick up the new build too.
+    - name: Restart curator daemon
+      ansible.builtin.command:
+        cmd: systemctl --user restart curator-daemon
+      environment:
+        XDG_RUNTIME_DIR: /run/user/1001
+      changed_when: true
+      listen: Reload and restart curator
